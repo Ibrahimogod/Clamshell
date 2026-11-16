@@ -1,0 +1,903 @@
+import AppKit
+import ClamshellInput
+import ClamshellKeychain
+import ClamshellRateControl
+import ClamshellSession
+import ClamshellStream
+import ClamshellTransport
+import ClamshellVideo
+import ClamshellVirtualDisplay
+import ClamshellWire
+import CoreGraphics
+import CoreVideo
+import CryptoKit
+import Foundation
+import Observation
+import os
+import ServiceManagement
+import SwiftUI
+
+/// Owns the host: Noise/UDP server (Bonjour `_clamshell._udp` on the LAN), and per connected phone a
+/// virtual display at the phone's size → ScreenCaptureKit → `HostVideoPipeline` → paced, sealed datagrams.
+/// For paths we don't own (cellular, other Wi-Fi) the phone's `ReceiverReport`s drive the bitrate and FEC,
+/// and `MacPresence` keeps the Mac from idling into the screen saver and lock while someone watches.
+@MainActor
+@Observable
+final class HostController {
+    enum Status: Equatable {
+        case starting, waiting(port: UInt16), streaming(peer: String), failed(String)
+    }
+
+    private(set) var status: Status = .starting
+    /// Phones on the allow-list, and the open pairing window if any (ADR-0014).
+    private(set) var devices: [PairedDevice] = []
+    private(set) var pairing: PairingState?
+    /// Remote access paused: no sessions, the 443 listener is closed. LAN pairing still works.
+    private(set) var paused = false
+    private var deviceStore = DeviceStore(keychain: nil)
+    private let pairingWindow = PairingWindowController()
+    private var pairingTimer: Task<Void, Never>?
+    /// The router's public address (NAT-PMP) or the one typed in the pairing window (ADR-0005).
+    let publicAddress = PublicAddressMonitor(
+        directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Clamshell"))
+    var publicAddressText: String {
+        guard let a = publicAddress.effective else { return "Public address: unknown (type it in the pairing window)" }
+        let n = publicAddress.changesLast30Days
+        return "Public address: \(a)" + (publicAddress.learned == a ? " (router)" : "") + (n > 0 ? " · changed \(n)× in 30 days" : "")
+    }
+    private(set) var stats = HostVideoPipeline.Stats()
+    private(set) var streamDescription = ""
+    private(set) var screenRecordingGranted = CGPreflightScreenCaptureAccess()
+    /// Rate control as last decided (for the menu): bitrate in Mbit/s and FEC overhead in percent.
+    private(set) var rateText = ""
+    private(set) var macScreen: MacScreenState = .active
+    /// The latency barcode patch (harness A) on the streamed screen: for measurements only, so off unless
+    /// `defaults write <bundle id> latencyBarcode -bool true`.
+    var barcodeEnabled = UserDefaults.standard.bool(forKey: "latencyBarcode") { didSet { updateBarcode() } }
+    /// Harness B flash square on the Mac panel and the virtual display. Off by default: it's distracting.
+    var flashEnabled = ProcessInfo.processInfo.environment["CLAMSHELL_FLASH"] == "1" { didSet { updateBarcode() } }
+
+    private let log = Logger(subsystem: "dev.clamshell.host", category: "host")
+    private let keychain = KeychainStore(service: "dev.clamshell.host")
+    private var server: HostSessionServer?
+    /// Path P3: TLS + WebSocket on TCP 443 (UserDefaults `tcpPort` to change), same sessions as UDP.
+    private var edge: WSSServer?
+    private(set) var edgeText = ""
+    private var session: StreamSession?
+    private var statsTask: Task<Void, Never>?
+    private var barcode: BarcodeOverlay?
+    private var flash: FlashOverlay?
+    /// Held while streaming, so a menu-bar app with no visible window is never App-Napped (timers and
+    /// display links throttled). Note: this did *not* fix the ~30 complete SCK frames/s seen on a Mac left
+    /// unattended for hours; that's still open (CHANGELOG, M1).
+    private var streamingActivity: (any NSObjectProtocol)?
+    private let presence = MacPresence()
+    private var peerMinor: UInt16 = 0
+    private var peerCaps: Capabilities = []
+    private(set) var inputAllowed = InputInjector.allowed {
+        didSet { if inputAllowed != oldValue { print("input permission: \(inputAllowed ? "allowed" : "NOT allowed")") } }
+    }
+    /// Show the Mac's own screen (true, default) or add a separate Clamshell display sized for the phone.
+    /// Mirroring falls back to the separate display when no real display is on (lid closed, no monitor).
+    var mirrorMainDisplay = UserDefaults.standard.object(forKey: "mirrorMainDisplay") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(mirrorMainDisplay, forKey: "mirrorMainDisplay")
+            Task { await restartForDisplayChoice() }
+        }
+    }
+    var clipboardSync = UserDefaults.standard.bool(forKey: "clipboardSync") {
+        didSet { UserDefaults.standard.set(clipboardSync, forKey: "clipboardSync"); updateClipboard() }
+    }
+    /// Files dropped on the phone's picture go to Downloads (M5). Off by default: it lets the phone write here.
+    var acceptFiles = UserDefaults.standard.bool(forKey: "acceptFiles") {
+        didSet { UserDefaults.standard.set(acceptFiles, forKey: "acceptFiles") }
+    }
+    var keepAwakeOnAC = UserDefaults.standard.bool(forKey: "keepAwakeOnAC") {
+        didSet { UserDefaults.standard.set(keepAwakeOnAC, forKey: "keepAwakeOnAC"); presence.keepAwakeOnAC = keepAwakeOnAC }
+    }
+    /// Start at login (`SMAppService`); the system shows it in Login Items, where it can be turned off too.
+    var openAtLogin: Bool {
+        get { SMAppService.mainApp.status == .enabled }
+        set {
+            do { if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } catch {
+                print("login item: \(error)")
+            }
+            loginItemTick += 1
+        }
+    }
+    private(set) var loginItemTick = 0
+    /// System audio to the phone (M5), when the phone asks for it (`audioOpus`). On by default.
+    var streamSound = UserDefaults.standard.object(forKey: "streamSound") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(streamSound, forKey: "streamSound"); Task { await restartAudio() } }
+    }
+    private var audio: AudioCapture?
+    private var audioPeer: [UInt8]?
+    private var audioSender: Task<Void, Never>?
+    /// T9: local input at the Mac pauses the phone's input; Esc×3 at the Mac ends every session.
+    @ObservationIgnored private lazy var localGuard = LocalUserGuard(
+        onChange: { [weak self] active in
+            guard let self else { return }
+            if active { self.session?.injector?.releaseAllHeld() }
+            print(active ? "local keyboard/mouse in use: phone input paused" : "local keyboard/mouse idle: phone input resumed")
+            Task { await self.sendHostState() }
+        },
+        onPanic: { [weak self] in Task { await self?.disconnectAll() } })
+    private(set) var lastFileNote = ""
+    private var bulkOut = BulkSender()
+    private var bulkIn = BulkReceiver()
+    private var bulkTask: Task<Void, Never>?
+    private var cursorMonitor: CursorMonitor?
+    private var clipboard: ClipboardSync?
+    @ObservationIgnored private var layoutObserver: NSObjectProtocol?
+
+    func start() {
+        setvbuf(stdout, nil, _IOLBF, 0)          // line-buffered, for `ClamshellHost > host.log`
+        // First run: ask now, so ClamshellHost appears in System Settings › Screen & System Audio Recording.
+        // macOS shows the prompt only once per app; afterwards this just reports the current state.
+        if !screenRecordingGranted && ProcessInfo.processInfo.environment["CLAMSHELL_TEST_PATTERN"] != "1" { requestScreenRecording() }
+        macScreen = presence.screen
+        presence.keepAwakeOnAC = keepAwakeOnAC
+        presence.onChange = { [weak self] state in
+            guard let self else { return }
+            self.macScreen = state
+            print("mac screen: \(state)")
+            Task { await self.sendHostState() }
+        }
+        publicAddress.onChange = { [weak self] ip in
+            print("public address: \(ip)")
+            Task { await self?.sendHomeEndpoint() }
+        }
+        publicAddress.start()
+        layoutObserver = KeyboardLayouts.observe { [weak self] in self?.sendKeyboardLayout() }
+        Task { await run() }
+    }
+
+    /// Mac → phone (1.3): the away-from-home address, at session start and on every change.
+    private func sendHomeEndpoint() async {
+        guard let s = session, let server, peerMinor >= 3, let host = publicAddress.effective else { return }
+        let tcp = UInt16(UserDefaults.standard.integer(forKey: "tcpPort")).nonZero ?? 443
+        let now = UInt64(Date().timeIntervalSince1970)
+        let msg = HomeEndpoint(host: host, udpPort: await server.boundPort ?? 51820, tcpPort: edge == nil ? 0 : tcp, observedAt: now, seq: now)
+        await server.send([msg.message], to: s.peerKey)
+    }
+
+    /// Mac → phone (1.6): the selected keyboard layout and what its keys type, so the phone's keys match.
+    private func sendKeyboardLayout() {
+        guard session != nil, peerMinor >= 6, let layout = KeyboardLayouts.current() else { return }
+        print("keyboard layout: \(layout.name) (\(layout.language.isEmpty ? "?" : layout.language), \(layout.keys.count) keys)")
+        sendBulk(layout.message)
+    }
+
+    func requestScreenRecording() {
+        screenRecordingGranted = CGRequestScreenCaptureAccess()
+    }
+
+    /// Keyboard and mouse from the phone need Accessibility. macOS shows its own prompt, which opens
+    /// System Settings › Privacy & Security › Accessibility; the person at the Mac switches it on.
+    func requestInputAccess() {
+        inputAllowed = CGRequestPostEventAccess()
+    }
+
+    // MARK: pairing and devices (ADR-0014)
+
+    /// Opens a 120 s pairing window after the Mac's owner authenticates.
+    func openPairing(skipAuth: Bool = false) async {
+        guard let server else { return }
+        if pairing != nil { pairingWindow.show(pairingView()); return }
+        guard devices.count < DeviceStore.limit else {
+            status = .failed("\(DeviceStore.limit) phones are paired already. Revoke one first.")
+            return
+        }
+        if !skipAuth { guard await PairingSupport.authorize() else { return } }
+        let port = await server.boundPort ?? 51820
+        let invite = PairingInvite(macPublicKey: await server.publicKey, secret: PairingInvite.newSecret(),
+                                   macName: Host.current().localizedName ?? "Mac", port: port, addresses: PairingSupport.lanAddresses())
+        await server.openPairing(invite)
+        let state = PairingState(invite: invite, seconds: 120)
+        pairing = state
+        print("CLAMSHELL_PAIR_INVITE=\(invite.string)")
+        print("CLAMSHELL_PAIR_CODE=\(invite.manualCode)")
+        pairingWindow.show(pairingView())
+        pairingTimer?.cancel()
+        pairingTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(120))
+            guard !Task.isCancelled, let self, self.pairing === state, state.requests.isEmpty else { return }
+            await self.closePairing()
+        }
+    }
+
+    private func pairingView() -> some View {
+        PairingView(state: pairing ?? PairingState(invite: PairingInvite(macPublicKey: nil, secret: []), seconds: 0),
+                    confirm: { [weak self] id in Task { await self?.confirmPairing(id) } },
+                    reject: { [weak self] id in Task { await self?.rejectPairing(id) } },
+                    cancel: { [weak self] in Task { await self?.closePairing() } })
+    }
+
+    func closePairing() async {
+        pairingTimer?.cancel()
+        pairing = nil
+        pairingWindow.close()
+        await server?.closePairing()
+    }
+
+    private func confirmPairing(_ id: UInt32) async {
+        guard let server, let state = pairing else { return }
+        guard devices.count < DeviceStore.limit else { state.message = "Too many paired phones."; return }
+        let tcp = UInt16(UserDefaults.standard.integer(forKey: "tcpPort")).nonZero ?? 443
+        let publicHost = publicAddress.effective ?? ""
+        do {
+            let peer = try await server.confirmPairing(id, accept: PairingAccept(accepted: true, udpPort: await server.boundPort ?? 51820,
+                                                                                  tcpPort: tcp, publicHost: publicHost))
+            try deviceStore.add(peer)
+            devices = deviceStore.devices
+            state.requests.removeAll { $0.id == id }
+            state.message = "Paired with \(peer.name.isEmpty ? "the phone" : peer.name)."
+            state.done = true
+            print("paired: \(peer.name)")
+            // Keep the window (and the server's cached answer) a few seconds for a phone that missed it.
+            pairingTimer?.cancel()
+            pairingTimer = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { return }
+                await self?.server?.closePairing()
+            }
+        } catch {
+            state.message = "Pairing failed: \(error)"
+        }
+    }
+
+    private func rejectPairing(_ id: UInt32) async {
+        await server?.rejectPairing(id)
+        pairing?.requests.removeAll { $0.id == id }
+    }
+
+    /// Removes the phone from the allow-list and ends its session now.
+    func revoke(_ device: PairedDevice) async {
+        await server?.revoke(peerKey: [UInt8](device.publicKey))
+        try? deviceStore.remove(device.publicKey)
+        devices = deviceStore.devices
+    }
+
+    /// Ends every live session; pairings stay.
+    func disconnectAll() async {
+        await server?.disconnectAll()
+    }
+
+    func setPaused(_ on: Bool) async {
+        guard let server else { return }
+        paused = on
+        await server.setPaused(on)
+        if on {
+            edge?.stop()
+            edge = nil
+            edgeText = "Remote access paused"
+        } else {
+            await startEdge(server)
+        }
+    }
+
+    private func run() async {
+        do {
+            let identity: StaticIdentity
+            let ephemeral = ProcessInfo.processInfo.environment["CLAMSHELL_EPHEMERAL_KEYS"] == "1"
+            if ephemeral {
+                // Tests and unsigned local builds: an ad-hoc signature changes every build, so the login
+                // keychain would ask for permission each launch. Keys and pairings live only for this run.
+                identity = StaticIdentity()
+            } else {
+                identity = try StaticIdentity(rawPrivateKey: [UInt8](keychain.dataOrCreate("identity") { Data(StaticIdentity().rawPrivateKey) }))
+                try? keychain.delete("dev-psk")          // M1 development pairing is gone
+            }
+            deviceStore = DeviceStore(keychain: ephemeral ? nil : keychain)
+            devices = deviceStore.devices
+            let hello = Hello(appVersion: "0.1.0", build: 1, capabilities: [.refinementFrames, .benchBarcode, .receiverReports, .fecXor, .inputV1, .clientCursor, .clipboardV1, .filesV1, .audioOpus],
+                              displayModes: [], maxFps: 120, deviceName: Host.current().localizedName ?? "Mac")
+            let server = HostSessionServer(responder: HostResponder(identity: identity, peers: devices.map(\.peer)), hello: hello)
+            self.server = server
+            let port = try await server.start(port: UInt16(UserDefaults.standard.integer(forKey: "udpPort")).nonZero,
+                                              bonjourName: Host.current().localizedName ?? "Clamshell Mac")
+            status = .waiting(port: port)
+            log.notice("listening on UDP \(port)")
+            print("CLAMSHELL_UDP_PORT=\(port)")
+            await startEdge(server)
+            #if DEBUG
+            // Automation: open a pairing window at launch (no owner check) and print the invite.
+            if ProcessInfo.processInfo.environment["CLAMSHELL_PAIR_ON_START"] == "1" { Task { await openPairing(skipAuth: true) } }
+            #endif
+            for await event in server.events { await handle(event, server: server) }
+        } catch {
+            status = .failed("\(error)")
+            log.error("host failed: \(String(describing: error))")
+        }
+    }
+
+    private func startEdge(_ server: HostSessionServer) async {
+        edge?.stop()
+        let port = UInt16(UserDefaults.standard.integer(forKey: "tcpPort")).nonZero ?? 443
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        do {
+            let identity = try EdgeIdentity.loadOrCreate(directory: support.appendingPathComponent("Clamshell"))
+            let w = WSSServer()
+            let bound = try await w.start(port: port, identity: identity)
+            await server.attach(w.datagrams)
+            edge = w
+            edgeText = "Internet fallback: TCP \(bound) (TLS + WebSocket)"
+            print("CLAMSHELL_TCP_PORT=\(bound)")
+            print("accessibility trusted: \(AXIsProcessTrusted()) · post events: \(CGPreflightPostEventAccess()) · bundle \(Bundle.main.bundlePath)")
+            print("input permission: \(InputInjector.allowed ? "allowed" : "NOT allowed") · screen recording: \(CGPreflightScreenCaptureAccess() ? "allowed" : "NOT allowed")")
+        } catch {
+            edgeText = "TCP \(port) unavailable: \(error)"
+            log.error("edge failed on TCP \(port): \(String(describing: error))")
+            print("CLAMSHELL_TCP_PORT=failed \(error)")
+        }
+    }
+
+    private func handle(_ event: HostSessionServer.Event, server: HostSessionServer) async {
+        switch event {
+        case .peerConnected(let key, let hello, _, _):
+            LocalUserGuard.notifySessionStarted(phone: hello.deviceName.isEmpty ? "Your iPhone" : hello.deviceName)
+            await stopStreaming()
+            await startStream(key: key, hello: hello, mode: initialMode(hello), continuing: nil, server: server)
+        case .messages(let key, let messages):
+            guard let session, session.peerKey == key else { return }
+            // Mirroring: a fold only changes how the phone lays the picture out, never the Mac's display.
+            if !session.mirroring, let m = messages.first(where: { $0.type == .displayModeRequest }), let req = try? DisplayModeRequest(m),
+               let hello = streamHello, req.mode != session.mode, Self.acceptable(req.mode) {
+                let carry = session.pipeline.position
+                await stopStreaming()
+                await startStream(key: key, hello: hello, mode: req.mode, continuing: (carry.frameId &+ 16, carry.generation), server: server)
+                return
+            }
+            await handleMessages(session: session, key: key, messages: messages, server: server)
+        default:
+            await handleOther(event, server: server)
+        }
+    }
+
+    /// The first stream's mode: the phone's current posture for a separate display; for mirroring the
+    /// largest one it offers, so the picture stays sharp in every posture without rebuilding.
+    private func initialMode(_ hello: Hello) -> DisplayMode {
+        let first = hello.displayModes.first ?? .laptop
+        guard mirrorMainDisplay else { return first }
+        return hello.displayModes.filter(Self.acceptable).max { $0.widthPixels * $0.heightPixels < $1.widthPixels * $1.heightPixels } ?? first
+    }
+
+    /// The display choice changed mid-session: rebuild the stream the new way.
+    private func restartForDisplayChoice() async {
+        guard let s = session, let hello = streamHello, let server else { return }
+        let key = s.peerKey
+        let carry = s.pipeline.position
+        await stopStreaming()
+        await startStream(key: key, hello: hello, mode: initialMode(hello), continuing: (carry.frameId &+ 16, carry.generation), server: server)
+    }
+
+    /// A requested mode the Mac will build: the four posture modes, or anything of the same size class.
+    static func acceptable(_ m: DisplayMode) -> Bool {
+        (320...2560).contains(m.widthPoints) && (320...2560).contains(m.heightPoints) && (1...3).contains(m.scale) && (30...120).contains(m.refreshHz)
+    }
+
+    private func startStream(key: [UInt8], hello: Hello, mode: DisplayMode, continuing: (frameId: UInt32, generation: UInt16)?,
+                             server: HostSessionServer) async {
+            streamHello = hello
+            presence.wakeDisplay()
+            let use444 = hello.capabilities.contains(.hevc444Decode)
+            do {
+                streamingActivity = ProcessInfo.processInfo.beginActivity(
+                    options: [.userInitiated, .latencyCritical], reason: "Streaming the screen to \(hello.deviceName)")
+                presence.holdAwake(reason: "Clamshell is streaming this screen to \(hello.deviceName)")
+                peerMinor = hello.protoMinor
+                peerCaps = hello.capabilities
+                bulkOut = BulkSender()
+                bulkIn = BulkReceiver()
+                let clientCursor = hello.capabilities.contains(.clientCursor)
+                let session = try await StreamSession(peerKey: key, mode: mode, use444: use444,
+                                                      adaptive: hello.capabilities.contains(.receiverReports),
+                                                      fec: hello.capabilities.contains(.fecXor), clientCursor: clientCursor,
+                                                      mirror: mirrorMainDisplay, continuing: continuing, server: server)
+                self.session = session
+                if hello.capabilities.contains(.inputV1) { startInput(session, cursor: clientCursor, server: server) }
+                localGuard.start()
+                startBulk(server: server, peer: key)
+                updateClipboard()
+                audioPeer = hello.capabilities.contains(.audioOpus) ? key : nil
+                await restartAudio()
+                status = .streaming(peer: hello.deviceName)
+                streamDescription = (session.mirroring ? "this Mac's screen, \(session.width)×\(session.height) px" : "\(mode.widthPoints)×\(mode.heightPoints) pt @\(mode.scale)×")
+                    + " \(mode.refreshHz) Hz · HEVC \(use444 ? "4:4:4" : "4:2:0")"
+                screenRecordingGranted = true
+                startStats()
+                updateBarcode()
+                await sendHostState()
+                await sendHomeEndpoint()
+                sendKeyboardLayout()
+                print("streaming to \(hello.deviceName): \(streamDescription)")
+            } catch {
+                status = .failed("\(error)")
+                screenRecordingGranted = CGPreflightScreenCaptureAccess()
+                log.error("stream start failed: \(String(describing: error))")
+                print("stream start failed: \(error)")
+            }
+    }
+
+    private func handleMessages(session: StreamSession, key: [UInt8], messages: [InnerMessage], server: HostSessionServer) async {
+            let input = messages.filter { $0.channel == .input }
+            if !input.isEmpty, !localGuard.active { session.injector?.handle(input) }
+            let t2 = HostClock.nowNs()
+            var replies: [InnerMessage] = []
+            for m in messages {
+                switch m.type {
+                case .keyframeRequest:
+                    session.pipeline.requestKeyframe(lastGoodFrameId: (try? KeyframeRequest(m))?.lastGoodFrameId)
+                case .ping:
+                    if let p = try? Ping(m) { replies.append(Pong(id: p.id, t1: p.t1, t2: t2, t3: HostClock.nowNs()).message) }
+                case .receiverReport:
+                    if let r = try? ReceiverReport(m), session.handle(r) { rateText = session.rateText }
+                case .bulkChunk:
+                    guard let c = try? BulkChunk(m) else { continue }
+                    let (ack, done) = bulkIn.add(c, nowNs: t2)
+                    replies.append(ack.message)
+                    if let done { received(done) }
+                case .bulkAck:
+                    if let a = try? BulkAck(m) { bulkOut.handle(a) }
+                default:
+                    break
+                }
+            }
+            if !replies.isEmpty { await server.send(replies, to: key) }
+    }
+
+    private func handleOther(_ event: HostSessionServer.Event, server: HostSessionServer) async {
+        switch event {
+        case .peerConnected, .messages:
+            break
+        case .pairingRequest(let r):
+            print("pairing request from \(r.phoneName): SAS \(r.sas)")
+            pairing?.requests.append(r)
+            pairingTimer?.cancel()
+            pairingWindow.show(pairingView())
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["CLAMSHELL_PAIR_AUTOCONFIRM"] == "1" { await confirmPairing(r.id) }
+            #endif
+        case .pairingClosed:
+            if let state = pairing, !state.done { state.message = "Pairing closed after failed attempts." }
+            pairing = nil
+            pairingWindow.close()
+        case .peerDisconnected(let key):
+            if session?.peerKey == key {
+                await stopStreaming()
+                if case .streaming = status, let port = await server.boundPort { status = .waiting(port: port) }
+            }
+        }
+    }
+
+    /// The Hello of the phone being streamed to, kept for a display mode rebuild.
+    private var streamHello: Hello?
+
+    private func stopStreaming() async {
+        statsTask?.cancel()
+        statsTask = nil
+        bulkTask?.cancel()
+        bulkTask = nil
+        cursorMonitor?.stop()
+        cursorMonitor = nil
+        clipboard?.stop()
+        clipboard = nil
+        if let a = audio { audio = nil; await a.stop() }
+        localGuard.stop()
+        barcode?.close()
+        barcode = nil
+        flash?.close()
+        flash = nil
+        if let s = session {
+            session = nil
+            await s.stop()
+        }
+        streamDescription = ""
+        rateText = ""
+        presence.release()
+        if let a = streamingActivity { ProcessInfo.processInfo.endActivity(a); streamingActivity = nil }
+    }
+
+    private func restartAudio() async {
+        if let a = audio { audio = nil; await a.stop() }
+        audioSender?.cancel()
+        audioSender = nil
+        guard streamSound, session != nil, let peer = audioPeer, let server else { return }
+        do {
+            // One sender keeps packets in order; a stuck send drops old audio rather than queueing it.
+            let (stream, out) = AsyncStream.makeStream(of: [AudioPacket].self, bufferingPolicy: .bufferingNewest(8))
+            let a = try AudioCapture { packets in out.yield(packets) }
+            audioSender?.cancel()
+            audioSender = Task.detached(priority: .userInitiated) {
+                for await p in stream { await server.send(p.map(\.message), to: peer) }
+            }
+            try await a.start()
+            audio = a
+        } catch {
+            print("audio: \(error)")
+        }
+    }
+
+    private func startStats() {
+        statsTask?.cancel()
+        statsTask = Task { [weak self] in
+            var n = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, let s = self.session, let server = self.server else { return }
+                n += 1
+                if s.checkReportsStale() { self.rateText = s.rateText }
+                if n % 4 == 0 { await self.sendHostState() }
+                let st = s.pipeline.currentStats
+                self.stats = st
+                let msg = HostStats(encodeMicros: UInt32(clamping: Int(st.lastEncodeMs * 1000)), framesSent: UInt32(clamping: st.framesSent),
+                                    keyframes: UInt32(clamping: st.keyframes), refinements: UInt32(clamping: st.refinements),
+                                    bytesSent: UInt64(st.bytesSent), encoderDrops: UInt32(clamping: st.encoderDrops),
+                                    skippedWhileBusy: UInt32(clamping: st.skippedWhileBusy))
+                await server.send([msg.message], to: s.peerKey)
+            }
+        }
+    }
+
+    /// Mac → phone on every change and every 2 s (protocol 1.1 phones only).
+    private func sendHostState() async {
+        guard let s = session, let server, peerMinor >= 1 else { return }
+        inputAllowed = InputInjector.allowed
+        let msg = HostState(screen: presence.screen, keepsAwake: presence.holdingAwake,
+                            targetBitrateKbps: UInt32(clamping: s.targetBitrate / 1000), fecPercent: s.fecPercent,
+                            inputAllowed: peerCaps.contains(.inputV1) ? inputAllowed : nil, localUser: localGuard.active)
+        await server.send([msg.message], to: s.peerKey)
+    }
+
+    private func startInput(_ session: StreamSession, cursor: Bool, server: HostSessionServer) {
+        let peer = session.peerKey
+        let scale = Double(max(session.mode.scale, 1))
+        let size = CGSize(width: Double(session.width) / scale, height: Double(session.height) / scale)
+        let injector = InputInjector(displayID: session.displayID, reportSize: size) { pos in
+            let m = pos.message
+            Task { await server.send([m], to: peer) }
+        }
+        session.injector = injector
+        injector.start()
+        guard cursor else { return }
+        let monitor = CursorMonitor { [weak self] shape, isNew in
+            injector.setShape(shape.shapeId)
+            if isNew { self?.sendBulk(shape.message) }
+        }
+        cursorMonitor = monitor
+        monitor.start()
+    }
+
+    /// Big messages (cursor images, clipboard) as reliable chunked transfers; resends every 150 ms.
+    private func startBulk(server: HostSessionServer, peer: [UInt8]) {
+        bulkTask?.cancel()
+        bulkTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard let self else { return }
+                let resend = self.bulkOut.poll(nowNs: HostClock.nowNs())
+                if !resend.isEmpty { await server.send(resend, to: peer) }
+            }
+        }
+    }
+
+    private func sendBulk(_ m: InnerMessage) {
+        guard let s = session, let server else { return }
+        let chunks = bulkOut.send(m, nowNs: HostClock.nowNs())
+        let peer = s.peerKey
+        Task {
+            // A burst of up to 4 MiB: in groups, so a big clipboard doesn't overrun the path at once.
+            for group in stride(from: 0, to: chunks.count, by: 16) {
+                await server.send(Array(chunks[group..<min(group + 16, chunks.count)]), to: peer)
+                if chunks.count > 16 { try? await Task.sleep(for: .milliseconds(5)) }
+            }
+        }
+    }
+
+    private func received(_ m: InnerMessage) {
+        switch m.type {
+        case .clipboardOffer:
+            if clipboardSync, let offer = try? ClipboardOffer(m) { clipboard?.apply(offer) }
+        case .fileOffer:
+            // Always advertised so the phone offers it; refused here unless the menu toggle is on.
+            guard let f = try? FileOffer(m) else { return }
+            guard acceptFiles else {
+                lastFileNote = "Refused \(FileOffer.safeName(f.name)) from the phone: turn on Accept files."
+                return
+            }
+            saveFile(f)
+        default:
+            break
+        }
+    }
+
+    /// A file from the phone: checked against its SHA-256, then written to Downloads under a safe, unused name.
+    private func saveFile(_ f: FileOffer) {
+        guard Array(SHA256.hash(data: f.data)) == f.sha256 else {
+            lastFileNote = "A file from the phone arrived damaged and was not saved."
+            print("file: hash mismatch for \(f.name)")
+            return
+        }
+        guard let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
+        let url = Self.unusedURL(in: downloads, name: FileOffer.safeName(f.name))
+        do {
+            try Data(f.data).write(to: url, options: [.withoutOverwriting])
+            lastFileNote = "Saved \(url.lastPathComponent) to Downloads"
+            print("file: saved \(url.path) (\(f.data.count) bytes)")
+        } catch {
+            lastFileNote = "Couldn't save \(url.lastPathComponent): \(error.localizedDescription)"
+            print("file: \(error)")
+        }
+    }
+
+    static func unusedURL(in dir: URL, name: String) -> URL {
+        var url = dir.appendingPathComponent(name)
+        let ext = url.pathExtension, stem = url.deletingPathExtension().lastPathComponent
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = dir.appendingPathComponent(ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
+            n += 1
+        }
+        return url
+    }
+
+    private func updateClipboard() {
+        clipboard?.stop()
+        clipboard = nil
+        guard clipboardSync, session != nil, peerCaps.contains(.clipboardV1) else { return }
+        let c = ClipboardSync { [weak self] offer in self?.sendBulk(offer.message) }
+        clipboard = c
+        c.start()
+    }
+
+    private func updateBarcode() {
+        barcode?.close()
+        barcode = nil
+        if barcodeEnabled, let s = session { barcode = BarcodeOverlay(displayID: s.displayID) }
+        flash?.close()
+        flash = nil
+        if flashEnabled, let s = session { flash = FlashOverlay(virtualDisplayID: s.displayID) }
+    }
+}
+
+/// One phone's stream: the virtual display lives exactly as long as the session.
+@MainActor
+final class StreamSession {
+    let peerKey: [UInt8]
+    let mode: DisplayMode
+    /// The display streamed and driven: the Mac's main display when mirroring, else the virtual one.
+    let displayID: CGDirectDisplayID
+    let mirroring: Bool
+    let width: Int, height: Int
+    /// Only for a separate display; it lives exactly as long as the session.
+    private let virtualDisplay: VirtualDisplay?
+    let pipeline: HostVideoPipeline
+    private let capture: ScreenCapture
+    private var patternTask: Task<Void, Never>?
+    private let sender: Task<Void, Never>
+    private let outbox: AsyncStream<OutFrame>.Continuation
+    private let pacer: OSAllocatedUnfairLock<Pacer>
+    /// Nil for a phone that sends no `ReceiverReport`s (protocol 1.0): it gets the fixed bitrate.
+    private var controller: BitrateController?
+    private let fecAllowed: Bool
+    private var lastReport: (atNs: UInt64, wireBytes: Int)?
+    private var sentEWMA = 0.0
+    private(set) var targetBitrate: Int
+    var injector: InputInjector?
+
+    /// - Parameters:
+    ///   - adaptive: the phone sends `ReceiverReport`s, so rate control and pacing are on.
+    ///   - fec: the phone understands XOR parity fragments (`fecXor`). Never send parity to one that doesn't:
+    ///     it would take a parity fragment for a data one.
+    init(peerKey: [UInt8], mode: DisplayMode, use444: Bool, adaptive: Bool, fec: Bool, clientCursor: Bool, mirror: Bool,
+         continuing: (frameId: UInt32, generation: UInt16)? = nil, server: HostSessionServer) async throws {
+        self.peerKey = peerKey
+        self.mode = mode
+        let testPattern = ProcessInfo.processInfo.environment["CLAMSHELL_TEST_PATTERN"] == "1"
+        guard testPattern || CGPreflightScreenCaptureAccess() else { throw StartError.noScreenRecording }
+        let w: Int, h: Int
+        if mirror, let main = Self.realDisplay() {
+            // The whole Mac: its main display, scaled down to fit the phone's largest posture (never up).
+            let (pw, ph) = Self.pixelSize(main)
+            let fit = min(Double(mode.widthPixels) / Double(pw), Double(mode.heightPixels) / Double(ph), 1)
+            w = Int(Double(pw) * fit) & ~1
+            h = Int(Double(ph) * fit) & ~1
+            displayID = main
+            virtualDisplay = nil
+            mirroring = true
+        } else {
+            w = Int(mode.widthPixels)
+            h = Int(mode.heightPixels)
+            let v = try VirtualDisplay(name: "Clamshell", pixelWidth: w, pixelHeight: h, refreshHz: Double(mode.refreshHz))
+            _ = await v.waitUntilOnline()
+            _ = v.selectMode()
+            displayID = v.displayID
+            virtualDisplay = v
+            mirroring = false
+        }
+        width = w
+        height = h
+
+        var cfg = EncoderConfig(width: w, height: h)
+        cfg.fps = Int(mode.refreshHz)
+        // Ceiling 50 Mbit/s (M1: 25 dropped ~half the frames of a continuous full-screen scroll on the LAN).
+        // Override: `defaults write <bundle id> bitrateMbps 80`. With reports the controller starts at
+        // 8 Mbit/s, below a typical hotel or LTE downlink; its start-up ramp reaches a LAN's ceiling in ~2 s.
+        let mbps = UserDefaults.standard.integer(forKey: "bitrateMbps")
+        let ceiling = (mbps > 0 ? mbps : 50) * 1_000_000
+        let start = adaptive ? min(ceiling, 8_000_000) : ceiling
+        cfg.averageBitrate = start
+        targetBitrate = start
+        controller = adaptive ? BitrateController(start: start, min: 1_500_000, max: ceiling) : nil
+        fecAllowed = fec
+        let pacer = OSAllocatedUnfairLock(initialState: Pacer(bitrate: Int(Double(start) * BitrateController.pacingFactor), factor: 1))
+        self.pacer = pacer
+        if use444 { cfg.profile = .named("HEVC_Main444_AutoLevel") }
+
+        // Frames go out in order through one sender task. Encoded frames are never dropped (a lost P-frame
+        // breaks the chain); instead the pipeline stops encoding while 2 frames are unsent, and the newest
+        // capture waits. The outbox can't grow past that, so it is unbounded.
+        let (stream, outbox) = AsyncStream.makeStream(of: OutFrame.self, bufferingPolicy: .unbounded)
+        self.outbox = outbox
+        let pipeline = try HostVideoPipeline(config: cfg, chroma: use444 ? .yuv444 : .yuv420,
+                                             sessionOverhead: SecureSession.overhead, maxUnsentFrames: 2,
+                                             continuing: continuing) { payloads, id, key in
+            outbox.yield(OutFrame(payloads: payloads, frameId: id, isKeyframe: key))
+        }
+        self.pipeline = pipeline
+        sender = Task.detached(priority: .userInitiated) {
+            for await frame in stream {
+                await Self.send(frame, server: server, to: peerKey, pacer: adaptive ? pacer : nil, pipeline: pipeline)
+                pipeline.frameSent()
+            }
+        }
+        pipeline.start()
+        capture = ScreenCapture { frame, captureNs, damaged in
+            pipeline.submit(frame, captureTimeNs: captureNs, damaged: damaged)
+        }
+        if testPattern {
+            // No capture: synthetic code text scrolls for 1 s, then holds still for 1 s (damage skip +
+            // refinement), at the display's rate. Lets the network path be tested without Screen Recording.
+            patternTask = Task.detached(priority: .userInitiated) {
+                let fps = Int(mode.refreshHz)
+                var frames: [SharedPixelBuffer] = []
+                for i in 0..<fps { if let b = TestPattern.pixelBuffer(width: w, height: h, phase: i * 2) { frames.append(SharedPixelBuffer(b)) } }
+                guard !frames.isEmpty else { return }
+                var tick = 0
+                while !Task.isCancelled {
+                    let cycle = tick % (2 * fps)
+                    let moving = cycle < fps
+                    pipeline.submit(frames[min(cycle, frames.count - 1)], captureTimeNs: HostClock.nowNs(), damaged: moving)
+                    tick += 1
+                    try? await Task.sleep(for: .microseconds(1_000_000 / fps))
+                }
+            }
+            return
+        }
+        // 4:4:4 needs full chroma from SCK, so BGRA (the pipeline converts to 444v); 4:2:0 takes 420v as is.
+        try await capture.start(displayID: displayID, width: w, height: h, fps: Int(mode.refreshHz), showsCursor: !clientCursor,
+                                pixelFormat: use444 ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+    }
+
+    /// `CLAMSHELL_RATE_LOG=1`: one line per receiver report (10 a second), for netsim runs.
+    private static let rateLog = ProcessInfo.processInfo.environment["CLAMSHELL_RATE_LOG"] == "1"
+
+    var fecPercent: UInt8 {
+        guard fecAllowed, let g = controller?.parityGroup, g > 0 else { return 0 }
+        return UInt8(clamping: 100 / g)
+    }
+
+    var rateText: String {
+        String(format: "%.1f Mbit/s", Double(targetBitrate) / 1e6) + (fecPercent > 0 ? " · FEC \(fecPercent)%" : "")
+    }
+
+    /// Feeds one `ReceiverReport` to the controller. Returns whether the rate changed.
+    func handle(_ r: ReceiverReport) -> Bool {
+        let now = HostClock.nowNs()
+        let wire = pipeline.currentStats.wireBytes
+        if let last = lastReport, now > last.atNs {
+            // Frames leave in lumps (a big one, then nothing for 100 ms): average over ~1 s.
+            let instant = Double(wire - last.wireBytes) * 8 / (Double(now - last.atNs) / 1e9)
+            sentEWMA = sentEWMA * 0.9 + instant * 0.1
+        }
+        lastReport = (now, wire)
+        let sent = Int(sentEWMA)
+        // The phone measures the path alone (ping RTT inflation). `own` is the Mac's waiting, for the log.
+        let ownMicros = Int(pipeline.currentStats.senderDelayMicros)
+        let pathMs = Double(r.queuingDelayMicros) / 1000
+        if Self.rateLog {
+            print(String(format: "rate: path q %.1f own %.1f rtt %.1f ms · loss %.3f lost %d · sent %.2f · target %.2f pace %.2f Mbit/s",
+                         pathMs, Double(ownMicros) / 1000, Double(r.rttMicros) / 1000, r.fragmentLoss, Int(r.framesLost),
+                         Double(sent) / 1e6, Double(targetBitrate) / 1e6, Double(controller?.pacingRate ?? 0) / 1e6))
+        }
+        return apply(nowNs: now, loss: r.fragmentLoss, framesLost: Int(r.framesLost),
+                     queuingDelayMs: pathMs, sentBitrate: sent, rttMicros: r.rttMicros)
+    }
+
+    /// No report for a second while streaming means the path back is gone or badly congested: back off as
+    /// if a tenth of everything were lost. Returns whether the rate changed.
+    func checkReportsStale() -> Bool {
+        guard controller != nil, let last = lastReport else { return false }
+        let now = HostClock.nowNs()
+        guard now > last.atNs + 1_000_000_000 else { return false }
+        return apply(nowNs: now, loss: 0.11, framesLost: 1, queuingDelayMs: 0, sentBitrate: 0, rttMicros: 0)
+    }
+
+    private func apply(nowNs: UInt64, loss: Double, framesLost: Int, queuingDelayMs: Double, sentBitrate: Int, rttMicros: UInt32) -> Bool {
+        guard var c = controller else { return false }
+        let before = c.decision
+        let d = c.update(nowNs: nowNs, loss: loss, framesLost: framesLost, queuingDelayMs: queuingDelayMs, sentBitrate: sentBitrate)
+        controller = c
+        targetBitrate = d.bitrate
+        pipeline.setRate(bitrate: d.bitrate, parityGroup: fecAllowed ? d.parityGroup : 0, rttMicros: rttMicros)
+        pacer.withLock { $0.bitrate = d.pacingRate }
+        return d != before
+    }
+
+    /// One frame's datagrams, spread out by the pacer (nil = all at once, for 1.0 phones). Datagrams that
+    /// fit the pacer's burst go in one batch; then it waits for the budget to refill.
+    struct OutFrame: Sendable {
+        let payloads: [[UInt8]]
+        let frameId: UInt32
+        let isKeyframe: Bool
+    }
+
+    nonisolated private static func send(_ frame: OutFrame, server: HostSessionServer, to peer: [UInt8],
+                                         pacer: OSAllocatedUnfairLock<Pacer>?, pipeline: HostVideoPipeline) async {
+        guard let pacer else {
+            pipeline.sendStarted(frameId: frame.frameId, nowNs: HostClock.nowNs())
+            await server.sendPayloads(frame.payloads, to: peer)
+            return
+        }
+        // The pacer's bitrate is the controller's pacing rate (≤ 2.5 × target); keyframes go at half of it.
+        pacer.withLock { $0.factor = frame.isKeyframe ? 0.5 : 1 }
+        var batch: [[UInt8]] = []
+        for (i, p) in frame.payloads.enumerated() {
+            let size = p.count + SecureSession.overhead + 28          // + IPv4/UDP headers
+            let wait = pacer.withLock { $0.delayNs(for: size, nowNs: HostClock.nowNs()) }
+            if wait > 0 {
+                if !batch.isEmpty { await server.sendPayloads(batch, to: peer); batch.removeAll(keepingCapacity: true) }
+                try? await Task.sleep(for: .nanoseconds(Int(wait)))
+            }
+            if i == 0 { pipeline.sendStarted(frameId: frame.frameId, nowNs: HostClock.nowNs()) }
+            pacer.withLock { $0.sent(size, nowNs: HostClock.nowNs()) }
+            batch.append(p)
+        }
+        if !batch.isEmpty { await server.sendPayloads(batch, to: peer) }
+    }
+
+    func stop() async {
+        injector?.stop()
+        injector = nil
+        patternTask?.cancel()
+        await capture.stop()
+        pipeline.stop()
+        outbox.finish()
+        sender.cancel()
+    }
+
+    /// The main display if it's on, else any other real (non-Clamshell) display that is; nil with the lid
+    /// closed and no monitor.
+    static func realDisplay() -> CGDirectDisplayID? {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var n: UInt32 = 0
+        guard CGGetActiveDisplayList(UInt32(ids.count), &ids, &n) == .success else { return nil }
+        let active = ids.prefix(Int(n)).filter { CGDisplayVendorNumber($0) != VirtualDisplay.vendorID && CGDisplayIsAsleep($0) == 0 }
+        let main = CGMainDisplayID()
+        return active.contains(main) ? main : active.first
+    }
+
+    static func pixelSize(_ id: CGDirectDisplayID) -> (Int, Int) {
+        if let m = CGDisplayCopyDisplayMode(id) { return (m.pixelWidth, m.pixelHeight) }
+        return (CGDisplayPixelsWide(id), CGDisplayPixelsHigh(id))
+    }
+
+    enum StartError: Error, CustomStringConvertible {
+        case noScreenRecording
+        var description: String { "Screen Recording is not allowed for Clamshell Host (System Settings › Privacy & Security)" }
+    }
+}
+
+private extension UInt16 {
+    var nonZero: UInt16? { self == 0 ? nil : self }
+}

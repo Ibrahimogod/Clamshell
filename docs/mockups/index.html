@@ -1,0 +1,1182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clamshell Mockups</title>
+<style>
+:root{
+  --bg:#F3F0EA; --surface:#FFFFFF; --surface2:#F7F4EF; --deck:#E6E0D5; --key:#FCFBF8; --key-lip:#D3CABB; --key-down:#EEE8DE;
+  --text:#1D2330; --muted:#6B6F78; --border:#DAD3C7; --accent:#E5603B; --accent-soft:rgba(229,96,59,.14);
+  --tide:#17907F; --tide-soft:rgba(23,144,127,.14); --caution:#C98A12; --danger:#C8372D;
+  --pad:#DCD5C9; --pad-dot:rgba(29,35,48,.10); --seam:#D9D2C6; --frame:#2A2E35; --hinge:#1A1D22;
+  --shadow:0 30px 60px rgba(30,25,15,.18), 0 6px 16px rgba(30,25,15,.10);
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#111418; --surface:#1B1F26; --surface2:#161A20; --deck:#191D24; --key:#272C36; --key-lip:#0B0D10; --key-down:#323845;
+    --text:#ECE8E1; --muted:#9097A3; --border:#2C323C; --accent:#FF7B55; --accent-soft:rgba(255,123,85,.16);
+    --tide:#3CC6B2; --tide-soft:rgba(60,198,178,.15); --caution:#E7AE3A; --danger:#F0625A;
+    --pad:#20252E; --pad-dot:rgba(236,232,225,.07); --seam:#14171C; --frame:#3A3F48; --hinge:#0A0B0D;
+    --shadow:0 30px 60px rgba(0,0,0,.5), 0 6px 16px rgba(0,0,0,.4);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#111418; --surface:#1B1F26; --surface2:#161A20; --deck:#191D24; --key:#272C36; --key-lip:#0B0D10; --key-down:#323845;
+  --text:#ECE8E1; --muted:#9097A3; --border:#2C323C; --accent:#FF7B55; --accent-soft:rgba(255,123,85,.16);
+  --tide:#3CC6B2; --tide-soft:rgba(60,198,178,.15); --caution:#E7AE3A; --danger:#F0625A;
+  --pad:#20252E; --pad-dot:rgba(236,232,225,.07); --seam:#14171C; --frame:#3A3F48; --hinge:#0A0B0D;
+  --shadow:0 30px 60px rgba(0,0,0,.5), 0 6px 16px rgba(0,0,0,.4);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
+
+/* ---------- header ---------- */
+header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface2)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.01em}
+.brand small{font-weight:500;color:var(--muted)}
+.tabs{display:flex;flex-wrap:wrap;gap:4px}
+.tab{border:1px solid transparent;background:none;padding:6px 10px;border-radius:9px;cursor:pointer;color:var(--muted);font-size:13px;display:flex;align-items:center;gap:6px}
+.tab:hover{background:var(--surface)}
+.tab.on{background:var(--surface);color:var(--text);border-color:var(--border);box-shadow:inset 0 -2px 0 var(--accent)}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto;align-items:center;font-size:12px;color:var(--muted)}
+.controls label{display:flex;align-items:center;gap:5px}
+select,.chip{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px 7px;font-size:12px}
+.chip{cursor:pointer}
+.chip.on{border-color:var(--accent);color:var(--accent)}
+#stage{position:relative;height:calc(100% - var(--hh,58px));overflow:auto}
+#scaler{position:absolute;left:50%;top:12px;transform-origin:top center}
+.view{display:none}
+.view.on{display:block}
+.caption{position:fixed;left:16px;bottom:12px;max-width:min(520px,calc(100% - 32px));font-size:12px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 10px;line-height:1.45;z-index:5}
+.caption b{color:var(--text)}
+.caption{cursor:pointer}
+.caption.min{max-width:none;padding:6px 10px}
+.caption.min > *{display:none}
+.caption.min::after{content:"ⓘ how to use this view"}
+
+/* ---------- device ---------- */
+.device{background:var(--frame);border-radius:52px;padding:16px;box-shadow:var(--shadow);position:relative}
+.screen{position:relative;overflow:hidden;background:#000}
+.hinge{background:linear-gradient(180deg,var(--hinge),#2b2f36 50%,var(--hinge))}
+.hinge.v{background:linear-gradient(90deg,var(--hinge),#2b2f36 50%,var(--hinge))}
+
+/* ---------- Mac desktop (remote content, fixed palette) ---------- */
+.mac{position:absolute;inset:0;overflow:hidden;font-family:ui-sans-serif,system-ui,sans-serif;color:#E9ECF1;user-select:none}
+.wall{position:absolute;inset:0;background:
+  radial-gradient(120% 90% at 85% 110%,#E5603B 0%,rgba(229,96,59,0) 55%),
+  radial-gradient(90% 80% at 10% -10%,#2F8F86 0%,rgba(47,143,134,0) 60%),
+  linear-gradient(160deg,#1C2733,#151A22 60%,#2A1E22);transition:transform .35s cubic-bezier(.3,.7,.2,1)}
+.mbar{position:absolute;left:0;right:0;top:0;height:22px;background:rgba(20,24,30,.55);backdrop-filter:blur(12px);display:flex;align-items:center;gap:16px;padding:0 12px;font-size:12px;z-index:3}
+.mbar b{font-weight:700}
+.mbar .r{margin-left:auto;display:flex;gap:12px;align-items:center;opacity:.9}
+.win{position:absolute;background:#1A1E25;border-radius:10px;box-shadow:0 18px 40px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.06);overflow:hidden;display:flex;flex-direction:column}
+.win .tb{height:28px;display:flex;align-items:center;gap:7px;padding:0 10px;background:#22272F;font-size:11.5px;color:#AEB5C1;flex:none}
+.win .tb i{width:10px;height:10px;border-radius:50%;background:#4A505B;display:block}
+.win .tb span{margin-left:10px}
+.ed{display:flex;flex:1;min-height:0}
+.side{width:150px;background:#171B21;border-right:1px solid #262B33;font-size:11px;padding:8px 0;color:#9AA3B0;flex:none}
+.side div{padding:2px 12px;white-space:nowrap}
+.side .sel{background:#2A3340;color:#E9ECF1}
+.code{flex:1;font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:11.5px;line-height:17px;padding:8px 0;overflow:hidden;position:relative}
+.code .lines{transition:transform .25s ease-out}
+.code .ln{display:flex;white-space:pre}
+.code .ln em{font-style:normal;width:36px;text-align:right;padding-right:14px;color:#4E5664;flex:none}
+.k{color:#FF8E6E}.t{color:#5FD3C3}.s{color:#E8C47A}.c{color:#6C7686;font-style:italic}.n{color:#C6A2F5}
+.caret{display:inline-block;width:1.5px;height:14px;background:#FF8E6E;vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.term{height:28%;border-top:1px solid #262B33;background:#14171C;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;line-height:16px;padding:6px 12px;color:#9AA3B0;flex:none}
+.term .ok{color:#5FD3C3}
+.dock{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);display:flex;gap:7px;padding:6px 8px;border-radius:16px;background:rgba(30,34,42,.5);backdrop-filter:blur(14px);box-shadow:0 0 0 1px rgba(255,255,255,.08);z-index:2;transition:box-shadow .2s}
+.dock i{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-style:normal;font-weight:700;font-size:14px;color:rgba(255,255,255,.92)}
+.dock.peek{box-shadow:0 0 0 2px #FF8E6E}
+.cursor{position:absolute;left:0;top:0;width:18px;height:24px;pointer-events:none;z-index:9;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.5))}
+.ripple{position:absolute;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;border:2px solid #FF8E6E;pointer-events:none;z-index:8;animation:rip .45s ease-out forwards}
+@keyframes rip{from{transform:scale(.3);opacity:1}to{transform:scale(1.6);opacity:0}}
+.mtoast{position:absolute;left:14px;bottom:58px;background:rgba(15,18,23,.82);border:1px solid rgba(255,255,255,.1);color:#E9ECF1;font-size:12px;padding:6px 10px;border-radius:9px;z-index:10;opacity:0;transform:translateY(6px);transition:.18s;pointer-events:none;font-family:"JetBrains Mono",ui-monospace,monospace}
+.mtoast.on{opacity:1;transform:none}
+.hud{position:absolute;left:10px;top:30px;z-index:11;background:rgba(10,12,16,.78);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:7px 10px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;line-height:15px;color:#DDE2EA;display:none;white-space:pre}
+.hud.on{display:block}
+.hud .g{color:#5FD3C3}.hud .w{color:#E7AE3A}
+.banner{position:absolute;left:50%;top:30px;transform:translate(-50%,-140%);z-index:12;background:#1D2330;color:#ECE8E1;border-radius:12px;padding:8px 12px;font-size:12.5px;display:flex;gap:10px;align-items:center;box-shadow:0 10px 24px rgba(0,0,0,.4);transition:transform .25s cubic-bezier(.3,.7,.2,1);white-space:nowrap}
+.banner.on{transform:translate(-50%,0)}
+.banner button{background:#2D3442;border:0;border-radius:7px;padding:4px 8px;font-size:12px;cursor:pointer;color:#ECE8E1}
+.banner button.p{background:#E5603B;color:#fff}
+.spin{width:12px;height:12px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#FF8E6E;animation:sp 0.8s linear infinite;display:inline-block}
+@keyframes sp{to{transform:rotate(360deg)}}
+.dim{position:absolute;inset:0;background:rgba(0,0,0,.3);z-index:7;display:none}
+.dim.on{display:block}
+.mc{position:absolute;inset:22px 0 0 0;z-index:13;background:rgba(8,10,14,.6);backdrop-filter:blur(6px);display:none;place-items:center}
+.mc.on{display:grid}
+.mc .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;width:78%}
+.mc .th{aspect-ratio:16/10;border-radius:8px;background:#1A1E25;box-shadow:0 0 0 1px rgba(255,255,255,.1);position:relative;overflow:hidden}
+.mc .th::before{content:"";position:absolute;left:0;right:0;top:0;height:14%;background:#22272F}
+.mc .th b{position:absolute;bottom:-20px;left:0;right:0;text-align:center;font-size:11px;font-weight:500;color:#C9CFD8}
+.mc .spaces{position:absolute;top:10px;left:50%;transform:translateX(-50%);display:flex;gap:10px;font-size:11px}
+.mc .spaces span{padding:3px 10px;border-radius:7px;background:rgba(255,255,255,.08)}
+.mc .spaces .on{background:#E5603B}
+.as{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:13;display:none;gap:12px;padding:14px;border-radius:20px;background:rgba(20,24,30,.8);backdrop-filter:blur(12px);box-shadow:0 0 0 1px rgba(255,255,255,.1)}
+.as.on{display:flex}
+.as i{width:54px;height:54px;border-radius:13px;display:grid;place-items:center;font-style:normal;font-weight:700;font-size:20px;outline:3px solid transparent;outline-offset:3px}
+.as i.sel{outline-color:rgba(255,255,255,.85)}
+.doc{padding:14px 18px;font-size:12.5px;line-height:1.55;color:#D5DAE2;overflow:hidden}
+.doc h3{margin:.2em 0 .5em;font-size:16px;color:#fff}
+.doc .diff{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;background:#14171C;border-radius:6px;padding:6px 8px;margin:8px 0;white-space:pre;overflow:hidden}
+.doc .add{color:#5FD3C3}.doc .del{color:#FF8E6E}
+
+/* ---------- Clamshell UI (themed) ---------- */
+.deck{position:absolute;inset:0;background:var(--deck);display:flex;flex-direction:column}
+.seambar{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--seam);border-bottom:1px solid var(--border)}
+.pill{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--surface);font-size:12px;font-weight:600;border:1px solid var(--border);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--tide);box-shadow:0 0 0 3px var(--tide-soft)}
+.dot.warn{background:var(--caution);box-shadow:0 0 0 3px rgba(201,138,18,.18)}
+.dot.bad{background:var(--danger);box-shadow:0 0 0 3px rgba(200,55,45,.18)}
+.seg{display:flex;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:2px;margin:0 auto}
+.seg button{border:0;background:none;padding:4px 11px;border-radius:8px;font-size:12px;cursor:pointer;color:var(--muted);font-weight:600}
+.seg button.on{background:var(--accent);color:#fff}
+.ibtn{width:30px;height:28px;border-radius:8px;border:1px solid var(--border);background:var(--surface);display:grid;place-items:center;cursor:pointer;font-size:13px;color:var(--text)}
+.ibtn.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.deckbody{flex:1;min-height:0;display:flex;flex-direction:column;padding:10px 12px 12px;gap:10px}
+.kb{display:flex;flex-direction:column;gap:6px;flex:none;position:relative}
+.row{display:flex;gap:6px;position:relative}
+.key{position:relative;background:var(--key);border-radius:18%/22%;box-shadow:0 2px 0 var(--key-lip),0 0 0 1px rgba(0,0,0,.04);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:500;cursor:pointer;user-select:none;color:var(--text);flex:none;transition:background .06s}
+.key.down{background:var(--key-down);transform:translateY(1.5px);box-shadow:0 .5px 0 var(--key-lip);transition:none}
+.key sup{position:absolute;top:5px;left:0;right:0;text-align:center;font-size:10px;color:var(--muted);font-weight:500}
+.key.two{padding-top:10px}
+.key.mod,.key.fn2{justify-content:flex-start;align-items:flex-end;padding:0 0 6px 8px;font-size:11px;color:var(--muted);flex-direction:column;align-items:flex-start;justify-content:flex-end;line-height:1.1}
+.key.mod b{font-size:14px;color:var(--text);font-weight:500}
+.key.r{align-items:flex-end;padding:0 8px 6px 0}
+.key.latched{box-shadow:0 2px 0 var(--key-lip),0 0 0 2px var(--accent)}
+.key.locked{background:var(--accent);color:#fff;box-shadow:0 2px 0 rgba(0,0,0,.25)}
+.key.locked b,.key.locked{color:#fff}
+.key.fk{font-size:10.5px;color:var(--muted);flex-direction:column;gap:1px}
+.key.fk b{font-size:12px;color:var(--text);font-weight:500}
+.key .led{position:absolute;left:8px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--muted);opacity:.35}
+.key .led.on{background:var(--tide);opacity:1;box-shadow:0 0 6px var(--tide)}
+.arrows{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:1fr 1fr;gap:3px;flex:none}
+.arrows .key{font-size:11px;border-radius:14%/26%}
+.grab{position:absolute;left:50%;top:-8px;transform:translateX(-50%);width:120px;height:14px;display:grid;place-items:center;cursor:pointer;z-index:2}
+.grab::before{content:"";width:44px;height:4px;border-radius:2px;background:var(--muted);opacity:.45}
+.grab span{position:absolute;left:100%;white-space:nowrap;font-size:10px;color:var(--muted);margin-left:2px}
+.frow .key{height:34px}
+.pad{position:relative;flex:1;min-height:60px;border-radius:16px;background:var(--pad);
+  background-image:radial-gradient(var(--pad-dot) 1.2px,transparent 1.3px);background-size:22px 22px;
+  box-shadow:inset 0 2px 6px rgba(0,0,0,.12),inset 0 0 0 1px rgba(0,0,0,.05);cursor:crosshair;touch-action:none;overflow:hidden}
+.pad .hint{position:absolute;right:10px;bottom:8px;font-size:11px;color:var(--muted);pointer-events:none}
+.pad .lock{position:absolute;left:10px;top:8px;font-size:11px;color:var(--accent);font-weight:600;display:none}
+.pad .lock.on{display:block}
+.touch{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;background:var(--accent-soft);border:1.5px solid var(--accent);pointer-events:none;opacity:0;transition:opacity .12s}
+.touch.on{opacity:1}
+.haptic{animation:hap .18s ease-out}
+@keyframes hap{0%{box-shadow:inset 0 0 0 3px var(--accent)}100%{box-shadow:inset 0 2px 6px rgba(0,0,0,.12)}}
+.legend{position:absolute;inset:8px;border-radius:12px;background:var(--surface);border:1px solid var(--border);z-index:5;padding:12px 14px;font-size:12px;display:none;overflow:auto}
+.legend.on{display:block}
+.legend table{border-collapse:collapse;width:100%}
+.legend td{padding:3px 6px;border-bottom:1px solid var(--border);vertical-align:top}
+.legend td:first-child{font-weight:600;white-space:nowrap}
+.legend .try{color:var(--accent);font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px}
+.split{display:flex;gap:10px;flex:1;min-height:0}
+.split .half{display:flex;flex-direction:column;gap:8px;justify-content:space-between}
+.split .half.right .row{justify-content:flex-end}
+
+/* flat */
+.floatpill{position:absolute;right:16px;bottom:16px;z-index:14;display:flex;gap:6px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:4px;box-shadow:0 8px 20px rgba(0,0,0,.25)}
+.minikb{position:absolute;left:300px;top:520px;z-index:14;width:560px;background:color-mix(in srgb,var(--deck) 92%,transparent);border-radius:18px;border:1px solid var(--border);box-shadow:0 18px 40px rgba(0,0,0,.35);padding:0 10px 10px;backdrop-filter:blur(10px)}
+.minikb .bar{height:22px;cursor:grab;display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--muted);padding:0 2px}
+.minikb .bar::before{content:"";width:40px;height:4px;border-radius:2px;background:var(--muted);opacity:.5;margin:0 auto;position:absolute;left:50%;transform:translateX(-50%)}
+.edge{position:absolute;left:0;right:0;bottom:0;height:22px;z-index:13;cursor:ns-resize}
+.edge::after{content:"";position:absolute;left:50%;bottom:6px;width:120px;height:4px;margin-left:-60px;border-radius:2px;background:rgba(255,255,255,.35)}
+
+/* phone UI pages */
+.ui{position:absolute;inset:0;background:var(--bg);color:var(--text);display:flex;flex-direction:column;overflow:hidden}
+.ui .top{padding:46px 28px 10px}
+.ui h1{font-size:30px;letter-spacing:-.02em;margin:0 0 6px}
+.ui h2{font-size:15px;color:var(--muted);font-weight:500;margin:0}
+.ui .body{flex:1;overflow:auto;padding:10px 22px 28px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:14px 16px;margin-bottom:14px}
+.card h4{margin:0 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.btn{display:block;width:100%;border:0;border-radius:14px;padding:14px;font-weight:700;font-size:16px;cursor:pointer;background:var(--accent);color:#fff}
+.btn.sec{background:var(--surface);color:var(--text);border:1px solid var(--border)}
+.btn:disabled{opacity:.45;cursor:default}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:16px;min-height:108px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;text-align:left}
+.tile:hover{border-color:var(--accent)}
+.tile .ic{width:36px;height:36px;border-radius:11px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:18px}
+.tile b{font-size:15px}
+.tile small{color:var(--muted);font-size:12px}
+.tile.danger .ic{background:rgba(200,55,45,.12);color:var(--danger)}
+.tile[aria-disabled="true"]{opacity:.45;cursor:default}
+.statrow{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:14px}
+.statrow:last-child{border:0}
+.statrow span:first-child{color:var(--muted)}
+.list .it{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid var(--border);font-size:14.5px}
+.list .it:last-child{border:0}
+.list .it small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+.sw{width:46px;height:28px;border-radius:999px;background:var(--border);position:relative;cursor:pointer;flex:none;border:0}
+.sw::after{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .16s}
+.sw.on{background:var(--accent)}
+.sw.on::after{left:21px}
+input[type=range]{accent-color:var(--accent);width:100%}
+.presets{display:flex;gap:6px;margin:8px 0}
+.presets button{flex:1;border:1px solid var(--border);background:var(--surface2);border-radius:10px;padding:6px;font-size:12px;cursor:pointer}
+.presets button.on{border-color:var(--accent);color:var(--accent)}
+.sas{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:46px;font-weight:700;letter-spacing:.08em;text-align:center;margin:24px 0}
+.cam{height:420px;border-radius:24px;background:#0D0F12;position:relative;overflow:hidden;margin-bottom:16px}
+.cam .frame{position:absolute;inset:80px 90px;border:3px solid var(--accent);border-radius:22px}
+.cam .scan{position:absolute;left:90px;right:90px;height:2px;background:var(--accent);top:80px;animation:scan 1.8s ease-in-out infinite alternate;box-shadow:0 0 12px var(--accent)}
+@keyframes scan{to{top:calc(100% - 82px)}}
+.pathrow{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--border);font-size:14px}
+.pathrow:last-child{border:0}
+.pathrow small{display:block;color:var(--muted);font-size:12px}
+.st{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;background:var(--border);color:var(--muted)}
+.st.ok{background:var(--tide-soft);color:var(--tide)}
+.st.no{background:rgba(200,55,45,.12);color:var(--danger)}
+.verdict{background:var(--tide-soft);border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.45}
+.phtoast{position:absolute;left:50%;bottom:30px;transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:9px 14px;border-radius:12px;font-size:13px;opacity:0;transition:.2s;z-index:20;white-space:nowrap}
+.phtoast.on{opacity:1;transform:translate(-50%,0)}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--surface);border-radius:26px 26px 0 0;padding:22px;box-shadow:0 -10px 30px rgba(0,0,0,.25);transform:translateY(105%);transition:transform .25s cubic-bezier(.3,.7,.2,1);z-index:21}
+.sheet.on{transform:none}
+
+/* Mac host windows (themed like a native-ish window but original) */
+.macwin{background:var(--surface);color:var(--text);border-radius:14px;border:1px solid var(--border);box-shadow:var(--shadow);overflow:hidden}
+.macwin .wt{height:36px;display:flex;align-items:center;gap:7px;padding:0 12px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:13px;font-weight:600}
+.macwin .wt i{width:11px;height:11px;border-radius:50%;background:var(--border);display:block}
+.macwin .wt span{margin-left:8px}
+.macwin .wb{padding:22px}
+.choice{display:flex;gap:10px;margin:14px 0}
+.choice button{flex:1;padding:14px 6px;border-radius:12px;border:1px solid var(--border);background:var(--surface2);font-family:"JetBrains Mono",ui-monospace,monospace;font-size:20px;font-weight:700;cursor:pointer}
+.choice button:hover{border-color:var(--accent)}
+.menu{position:absolute;right:120px;top:26px;width:330px;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(18px);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);padding:6px;font-size:13px;color:var(--text);z-index:20}
+.menu .mi{padding:6px 10px;border-radius:7px;display:flex;justify-content:space-between;align-items:center;cursor:default}
+.menu .mi.h:hover{background:var(--accent);color:#fff}
+.menu .mi.h:hover small{color:#fff}
+.menu .sep{height:1px;background:var(--border);margin:5px 6px}
+.menu small{color:var(--muted);font-size:11.5px}
+.menu .stat{padding:8px 10px 6px;display:flex;gap:10px;align-items:center}
+.menu .dev{padding:6px 10px;display:flex;align-items:center;gap:10px}
+.menu .dev .x{margin-left:auto;font-size:11.5px;border:1px solid var(--border);background:var(--surface2);border-radius:6px;padding:2px 8px;cursor:pointer}
+.menu .dev .x:hover{border-color:var(--danger);color:var(--danger)}
+.notif{position:absolute;right:14px;top:32px;width:340px;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(18px);border:1px solid var(--border);border-radius:16px;padding:12px 14px;display:flex;gap:12px;box-shadow:var(--shadow);font-size:13px;color:var(--text);z-index:21;transform:translateX(120%);transition:transform .3s cubic-bezier(.3,.7,.2,1)}
+.notif.on{transform:none}
+.appic{width:38px;height:38px;border-radius:10px;background:var(--accent);display:grid;place-items:center;flex:none}
+.curtain{position:absolute;inset:0;z-index:30;background:#0E1115;color:#D9DDE3;display:none;place-items:center;text-align:center;cursor:pointer}
+.curtain.on{display:grid}
+.curtain h3{font-size:26px;margin:16px 0 6px;font-weight:600}
+.curtain p{color:#8C939E;margin:4px 0;font-size:14px}
+</style>
+</head>
+<body>
+<header id="hdr">
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 14a9 9 0 0 1 18 0" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round"/><path d="M4 17h16" stroke="var(--tide)" stroke-width="2.4" stroke-linecap="round"/></svg>
+    Clamshell <small>UX mockups · Phase 2</small>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="controls">
+    <label>Network <select id="net"><option value="work">Work (443 only)</option><option value="home">Home LAN</option><option value="cell">Cellular</option></select></label>
+    <label>State <select id="banner">
+      <option value="none">Normal</option><option value="connecting">Connecting</option><option value="reconnecting">Reconnecting</option>
+      <option value="switched">Path switched</option><option value="paused">Paused locally</option><option value="ip">IP changed</option><option value="incompat">Incompatible</option><option value="perm">Permission expiring</option>
+    </select></label>
+    <button class="chip" id="hudBtn">HUD</button>
+    <select id="theme" aria-label="Theme"><option value="auto">Auto theme</option><option value="light">Light</option><option value="dark">Dark</option></select>
+    <select id="zoom" aria-label="Zoom"><option value="fit">Fit</option><option value="0.75">75%</option><option value="1">100%</option></select>
+  </div>
+</header>
+
+<main id="stage"><div id="scaler">
+
+<!-- ================= LAPTOP ================= -->
+<section class="view" id="v-laptop" data-w="971" data-h="1376">
+  <div class="device" style="width:971px;height:1376px">
+    <div class="screen" style="width:939px;height:667px;border-radius:36px 36px 6px 6px" id="laptopTop"></div>
+    <div class="hinge" style="width:939px;height:10px"></div>
+    <div class="screen" style="width:939px;height:667px;border-radius:6px 6px 36px 36px">
+      <div class="deck">
+        <div class="seambar">
+          <div class="pill"><span class="dot" data-netdot></span><span data-netlabel>WSS · 38 ms</span></div>
+          <div class="seg" id="deckSeg">
+            <button data-mode="deck" class="on">Deck</button><button data-mode="split">Split</button><button data-mode="pad">Pad</button><button data-mode="keys">Keys</button>
+          </div>
+          <button class="ibtn" data-act="legend" title="Gestures">?</button>
+          <button class="ibtn" data-act="hud" title="HUD">◱</button>
+          <button class="ibtn" data-act="clip" title="Clipboard sync">⧉</button>
+          <button class="ibtn" data-act="more" title="More">⋯</button>
+        </div>
+        <div class="deckbody" id="deckBody"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= FLAT ================= -->
+<section class="view" id="v-flat" data-w="1367" data-h="971">
+  <div class="device" style="width:1367px;height:971px">
+    <div class="screen" style="width:1335px;height:939px;border-radius:36px" id="flatScreen">
+      <div style="position:absolute;left:667px;top:0;bottom:0;width:1px;background:rgba(255,255,255,.05);z-index:15;pointer-events:none"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= BOOK ================= -->
+<section class="view" id="v-book" data-w="1376" data-h="971">
+  <div class="device" style="width:1376px;height:971px;display:flex">
+    <div class="screen" style="width:667px;height:939px;border-radius:36px 6px 6px 36px" id="bookLeft"></div>
+    <div class="hinge v" style="width:10px;height:939px"></div>
+    <div class="screen" style="width:667px;height:939px;border-radius:6px 36px 36px 6px">
+      <div class="deck">
+        <div class="seambar">
+          <div class="pill"><span class="dot" data-netdot></span><span data-netlabel>WSS · 38 ms</span></div>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="ibtn" id="bookKbBtn" title="Keyboard">⌨</button>
+            <button class="ibtn" data-act="hud" title="HUD">◱</button>
+            <button class="ibtn" data-act="more" title="More">⋯</button>
+          </div>
+        </div>
+        <div class="deckbody" id="bookBody"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= COVER ================= -->
+<section class="view" id="v-cover" data-w="731" data-h="1049">
+  <div class="device" style="width:731px;height:1049px">
+    <div class="screen" style="width:699px;height:1017px;border-radius:40px" id="coverScreen">
+      <div class="ui" id="glance">
+        <div class="top">
+          <h2>Clamshell</h2>
+          <h1>Home MacBook Pro</h1>
+          <div class="pill" style="display:inline-flex;margin-top:6px"><span class="dot" data-netdot></span><span data-netlabel>Reachable · WSS · 38 ms</span></div>
+        </div>
+        <div class="body">
+          <div class="card">
+            <div class="statrow"><span>Last session</span><span>12 min ago · 1 h 40 m</span></div>
+            <div class="statrow"><span>Mac power</span><span>On charger · 80% limit</span></div>
+            <div class="statrow"><span>Home address</span><span class="mono">41.●●.●●.17</span></div>
+            <div class="statrow"><span>IP changes (30 d)</span><span>3</span></div>
+          </div>
+          <div class="tiles" id="coverTiles"></div>
+        </div>
+        <div class="sheet" id="coverSheet">
+          <div style="font-weight:700;font-size:18px;margin-bottom:6px">Disconnect all sessions?</div>
+          <div style="color:var(--muted);font-size:14px;margin-bottom:16px">Every device is disconnected now. Pairings stay; you can reconnect any time.</div>
+          <button class="btn" style="background:var(--danger)" data-sheet="yes">Disconnect all</button>
+          <div style="height:8px"></div>
+          <button class="btn sec" data-sheet="no">Cancel</button>
+        </div>
+        <div class="phtoast" id="coverToast"></div>
+      </div>
+      <div id="coverSession" style="position:absolute;inset:0;display:none"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= PAIRING ================= -->
+<section class="view" id="v-pair" data-w="1491" data-h="1049">
+  <div style="display:flex;gap:40px;align-items:flex-start">
+    <div class="device" style="width:731px;height:1049px;flex:none">
+      <div class="screen" style="width:699px;height:1017px;border-radius:40px"><div class="ui" id="pairPhone"></div></div>
+    </div>
+    <div style="flex:none;width:720px;padding-top:120px">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px">On your Mac: the Clamshell menu → Pair new iPhone…</div>
+      <div class="macwin" style="width:720px"><div class="wt"><i></i><i></i><i></i><span>Pair new iPhone</span></div><div class="wb" id="pairMac"></div></div>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.5">Pairing works only on your home network, only while this window is open (120 s), and you must pick the matching code. Three wrong answers close the window. See <span class="mono">docs/security.md §5 T5</span>.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= NETWORK CHECK ================= -->
+<section class="view" id="v-net" data-w="731" data-h="1049">
+  <div class="device" style="width:731px;height:1049px">
+    <div class="screen" style="width:699px;height:1017px;border-radius:40px">
+      <div class="ui">
+        <div class="top"><h2>Settings ›</h2><h1>Network check</h1>
+          <div style="color:var(--muted);font-size:14px;line-height:1.45">Tries every way to reach your Mac from this network. Changes nothing.</div></div>
+        <div class="body">
+          <div class="card"><h4>Simulated network</h4>
+            <div class="seg" style="margin:0" id="netScenario"><button data-s="work" class="on">Work Wi-Fi</button><button data-s="home">Home Wi-Fi</button><button data-s="cell">Cellular</button></div>
+          </div>
+          <div class="card" id="netPaths"></div>
+          <div class="verdict" id="netVerdict" style="display:none"></div>
+          <div style="height:14px"></div>
+          <button class="btn" id="netRun">Run check</button>
+          <div style="height:8px"></div>
+          <button class="btn sec" id="netCopy">Copy report</button>
+        </div>
+        <div class="phtoast" id="netToast"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= SETTINGS ================= -->
+<section class="view" id="v-settings" data-w="731" data-h="1049">
+  <div class="device" style="width:731px;height:1049px">
+    <div class="screen" style="width:699px;height:1017px;border-radius:40px">
+      <div class="ui">
+        <div class="top"><h2>Clamshell</h2><h1>Settings</h1></div>
+        <div class="body" id="settingsBody">
+          <div class="card"><h4>Pointer</h4>
+            <svg id="curve" viewBox="0 0 300 160" style="width:100%;height:170px;background:var(--surface2);border-radius:12px;border:1px solid var(--border)"></svg>
+            <div class="presets" id="presets"><button data-p="mac" class="on">MacBook-like</button><button data-p="lin">Linear</button><button data-p="fast">Fast</button></div>
+            <div style="font-size:13px;color:var(--muted)">Speed <span id="gainV"></span></div><input type="range" id="gain" min="0.5" max="2.5" step="0.05">
+            <div style="font-size:13px;color:var(--muted);margin-top:6px">Acceleration <span id="gammaV"></span></div><input type="range" id="gamma" min="1" max="2.2" step="0.05">
+            <div style="font-size:12px;color:var(--muted);margin-top:6px">Applies live to the trackpad on the Laptop, Flat and Book tabs.</div>
+          </div>
+          <div class="card list" id="toggles"></div>
+          <div class="card list">
+            <div class="it"><div>Text quality<small>What to keep when bandwidth is short</small></div><select><option>Sharpest text</option><option>Balanced</option><option>Smoothest motion</option></select></div>
+            <div class="it"><div>⌘-Tab from hardware keyboard<small>iOS reserves ⌘-Tab</small></div><select><option>⌥-Tab → ⌘-Tab</option><option>⌃-Tab → ⌘-Tab</option><option>Off</option></select></div>
+            <div class="it"><div>Keyboard layout<small>Key caps only; typing follows the Mac's input source</small></div><select><option>ANSI (US)</option><option>ISO</option><option>Arabic labels</option></select></div>
+            <div class="it"><div>Laptop display size<small>"More space" is softer, like a MacBook's scaled modes</small></div><select><option>939 × 667 · pixel-perfect</option><option>1080 × 768</option><option>1252 × 890</option></select></div>
+            <div class="it"><div>Network check<small>Diagnose which paths work here</small></div><span style="color:var(--accent);font-weight:600">›</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= MAC MENU BAR ================= -->
+<section class="view" id="v-macmenu" data-w="1200" data-h="720">
+  <div style="width:1200px;height:720px;position:relative;border-radius:16px;overflow:hidden;box-shadow:var(--shadow)">
+    <div class="mac">
+      <div class="wall"></div>
+      <div class="mbar"><b>◆</b><b>Finder</b><span>File</span><span>Edit</span><span>View</span><span>Go</span><span>Window</span>
+        <div class="r">
+          <span id="mmIcon" style="cursor:pointer;padding:0 4px;border-radius:5px;background:rgba(255,255,255,.18)">
+            <svg width="18" height="14" viewBox="0 0 24 18" style="vertical-align:-2px"><path d="M2 12a10 10 0 0 1 20 0" fill="none" stroke="#FF8E6E" stroke-width="2.6" stroke-linecap="round"/><path d="M3 16h18" stroke="#E9ECF1" stroke-width="2.6" stroke-linecap="round"/></svg>
+          </span>
+          <span>Wi-Fi</span><span>Sun 15 Nov 10:42</span>
+        </div>
+      </div>
+      <div class="menu" id="mmMenu"></div>
+      <div class="notif" id="mmNotif"><div class="appic"><svg width="22" height="18" viewBox="0 0 24 18"><path d="M2 12a10 10 0 0 1 20 0" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><path d="M3 16h18" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg></div>
+        <div><b>iPhone Duo connected</b><div style="color:var(--muted);margin-top:2px">Work Wi-Fi · WSS 443 · screen curtain on</div><div style="margin-top:8px;display:flex;gap:6px"><button class="chip">Disconnect</button><button class="chip">Details</button></div></div></div>
+      <div class="curtain" id="mmCurtain"><div>
+        <svg width="64" height="48" viewBox="0 0 24 18"><path d="M2 12a10 10 0 0 1 20 0" fill="none" stroke="#FF7B55" stroke-width="2" stroke-linecap="round"/><path d="M3 16h18" stroke="#3CC6B2" stroke-width="2" stroke-linecap="round"/></svg>
+        <h3>In use remotely</h3><p>iPhone Duo · since 09:14 · via Work Wi-Fi</p><p style="margin-top:18px">Typing here pauses the remote session. Press Esc three times to end it.</p>
+        <p style="margin-top:30px;font-size:12px">(mockup: what the physical MacBook screen shows; click to close)</p></div></div>
+    </div>
+  </div>
+</section>
+
+</div></main>
+<div class="caption" id="caption"></div>
+
+<script>
+(() => {
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const store = { get(k, d){ try { const v = localStorage.getItem('clamshell.' + k); return v === null ? d : v; } catch(e){ return d; } },
+                set(k, v){ try { localStorage.setItem('clamshell.' + k, v); } catch(e){} } };
+
+const VIEWS = [
+  ['laptop','Laptop','▭̲', 'Partially open, fold horizontal. Top: the Mac at 1:1 pixels (939 × 667 pt). Bottom: the deck. <b>Try:</b> type on the keys, drag on the trackpad, wheel to scroll, right-click for a two-finger tap, <b>⌥-drag</b> for three-finger swipes, <b>⌃-drag</b> for the four-finger app switcher. Swipe down on the number row (or click the grabber) for the F-keys.'],
+  ['flat','Flat','▭', 'Fully open. The Mac fills the screen (1335 × 939 pt). <b>Try:</b> toggle Direct / Trackpad (bottom right), drag the floating keyboard, drag up from the bottom edge to reveal the Dock.'],
+  ['book','Book','▯▯', 'Partially open, fold vertical. Left: the Mac in portrait (667 × 939 pt), good for reading PRs and docs. Right: trackpad, with the keyboard on demand.'],
+  ['cover','Cover','▯', 'Closed. Glance at the Mac’s status and use quick actions on the 5.4″ outer screen. <b>Phone session</b> runs a full portrait session (699 × 1017 pt).'],
+  ['pair','Pairing','⌗', 'One-time pairing at home: scan the QR code, then pick the matching 6-digit code on the Mac. Walk through it with the buttons on both screens.'],
+  ['net','Network check','◎', 'The in-app probe you’ll run once at work. It reports which paths work, through which proxy, and whether TLS is inspected. Inner encryption makes inspection harmless.'],
+  ['settings','Settings','⚙', 'Pointer curve editor (it applies live to the trackpads), sticky modifiers, clipboard sync (off by default), Touch ID unlock, and more.'],
+  ['macmenu','Mac menu bar','◆', 'The Mac host: status, devices and revoke, disconnect all, pause, IP history, and the privacy curtain the physical screen shows during a session.'],
+];
+
+const S = {
+  view: store.get('view','laptop'), deckMode:'deck', hud:false, net:'work', banner:'none',
+  sticky:true, popups:false, clip:false, tapClick:true, natural:true, touchId:true, haptics:true, lockLayout:false,
+  frow:false, caps:false, mods:{shift:0,ctrl:0,opt:0,cmd:0,fn:0}, lastModTap:{},
+  typed:'', gain:1.0, gamma:1.55, preset:'mac', flatInput:'direct', bookKb:false, coverSession:false, space:1,
+};
+
+/* ---------- keyboard data ---------- */
+const C = (a, b) => ({ l:a, s:b, w:1, t:'char' });
+const ROW_F = [{l:'esc',w:2,t:'sp',id:'esc'}].concat(
+  ['☼−','☼+','▦','⌕','🎤︎','☾','⏮︎','⏯︎','⏭︎','🔇︎','🔉︎','🔊︎'].map((ic,i)=>({l:'F'+(i+1),ic,w:1,t:'f'})),
+  [{l:'⏻',w:1,t:'sp',id:'lock'}]);
+const ROW1 = [C('`','~'),C('1','!'),C('2','@'),C('3','#'),C('4','$'),C('5','%'),C('6','^'),C('7','&'),C('8','*'),C('9','('),C('0',')'),C('-','_'),C('=','+'),{l:'delete',w:2,t:'sp',id:'del',r:1}];
+const ROW2 = [{l:'tab',w:1.5,t:'sp',id:'tab'}].concat('qwertyuiop'.split('').map(c=>C(c)),[C('[','{'),C(']','}'),{l:'\\',s:'|',w:1.5,t:'char'}]);
+const ROW3 = [{l:'caps lock',w:1.75,t:'sp',id:'caps'}].concat('asdfghjkl'.split('').map(c=>C(c)),[C(';',':'),C("'",'"'),{l:'return',w:2.25,t:'sp',id:'ret',r:1}]);
+const ROW4 = [{l:'shift',sym:'⇧',w:2.25,t:'mod',id:'shift'}].concat('zxcvbnm'.split('').map(c=>C(c)),[C(',','<'),C('.','>'),C('/','?'),{l:'shift',sym:'⇧',w:2.75,t:'mod',id:'shift',r:1}]);
+const ROW5 = [{l:'fn',sym:'🌐︎',w:1,t:'mod',id:'fn'},{l:'control',sym:'⌃',w:1,t:'mod',id:'ctrl'},{l:'option',sym:'⌥',w:1,t:'mod',id:'opt'},{l:'command',sym:'⌘',w:1.25,t:'mod',id:'cmd'},
+  {l:'',w:5.5,t:'sp',id:'space'},{l:'command',sym:'⌘',w:1.25,t:'mod',id:'cmd',r:1},{l:'option',sym:'⌥',w:1,t:'mod',id:'opt',r:1},{t:'arrows',w:3}];
+const FULL = [ROW1,ROW2,ROW3,ROW4,ROW5];
+const SPLIT_L = [ROW1.slice(0,6), ROW2.slice(0,6), ROW3.slice(0,6), ROW4.slice(0,6), [ROW5[0],ROW5[1],ROW5[2],ROW5[3],{l:'',w:2.5,t:'sp',id:'space'}]];
+const SPLIT_R = [ROW1.slice(6).map(k=>k.id==='del'?{...k,w:1.5}:k), ROW2.slice(6).map(k=>k.l==='\\'?{...k,w:1.5}:k), ROW3.slice(6).map(k=>k.id==='ret'?{...k,w:1.75}:k),
+  ROW4.slice(6).map(k=>k.id==='shift'?{...k,w:1.75}:k), [{l:'',w:2,t:'sp',id:'space'},ROW5[5],ROW5[6],{t:'arrows',w:3}]];
+const PAD_ROW = [{l:'esc',w:1.2,t:'sp',id:'esc'},{l:'control',sym:'⌃',w:1.2,t:'mod',id:'ctrl'},{l:'option',sym:'⌥',w:1.2,t:'mod',id:'opt'},{l:'command',sym:'⌘',w:1.4,t:'mod',id:'cmd'},{l:'shift',sym:'⇧',w:1.4,t:'mod',id:'shift'},
+  {l:'tab',w:1.2,t:'sp',id:'tab'},{l:'',w:3,t:'sp',id:'space'},{t:'arrows',w:3},{l:'⌨',w:1.2,t:'sp',id:'tokeys'}];
+const MINI = [ROW2,ROW3,ROW4,ROW5];
+
+function units(row){ return row.reduce((a,k)=>a+k.w,0); }
+
+function buildKeyboard(el, rows, {width, rowH, gap=6, align='left', frow=false, grab=false, fH=34}){
+  el.innerHTML = '';
+  const maxU = Math.max(...rows.map(units), frow ? units(ROW_F) : 0);
+  const u = (width + gap) / maxU;
+  const all = frow ? [ROW_F, ...rows] : rows;
+  all.forEach((row, ri) => {
+    const r = document.createElement('div'); r.className = 'row' + (frow && ri===0 ? ' frow' : '');
+    r.style.gap = gap + 'px';
+    const isF = frow && ri === 0;
+    const h = isF ? fH : rowH;
+    if (align === 'right') r.style.justifyContent = 'flex-end';
+    row.forEach(k => r.appendChild(makeKey(k, u * k.w - gap, h)));
+    if (grab && ((frow && ri===1) || (!frow && ri===0))) {
+      const g = document.createElement('div'); g.className = 'grab'; g.title = 'Swipe down for F-keys';
+      g.innerHTML = '<span>' + (S.frow ? 'F-keys ↑' : 'swipe ↓ for F-keys') + '</span>';
+      g.addEventListener('click', () => { S.frow = !S.frow; renderDeck(); });
+      r.appendChild(g);
+      attachSwipe(r);
+    }
+    if (isF) attachSwipe(r, true);
+    el.appendChild(r);
+  });
+  refreshMods();
+}
+function attachSwipe(row, isF){
+  let y0 = null;
+  row.addEventListener('pointerdown', e => { y0 = e.clientY; });
+  row.addEventListener('pointermove', e => {
+    if (y0 === null) return;
+    const dy = (e.clientY - y0) / scale;
+    if (!isF && dy > 18 && !S.frow) { y0 = null; S.frow = true; renderDeck(); }
+    if (isF && dy < -14 && S.frow) { y0 = null; S.frow = false; renderDeck(); }
+  });
+  row.addEventListener('pointerup', () => { y0 = null; });
+}
+function makeKey(k, w, h){
+  if (k.t === 'arrows') {
+    const a = document.createElement('div'); a.className = 'arrows'; a.style.width = w + 'px'; a.style.height = h + 'px';
+    const hh = (h - 3) / 2;
+    [['','',1],['↑','up',1],['','',1],['←','left',2],['↓','down',2],['→','right',2]].forEach(([l,id,rr], i) => {
+      if (!l) { a.appendChild(document.createElement('span')); return; }
+      const kk = makeKey({l, w:1, t:'sp', id}, 0, hh); kk.style.width = 'auto'; kk.style.height = hh + 'px'; a.appendChild(kk);
+    });
+    return a;
+  }
+  const d = document.createElement('div');
+  d.className = 'key'; d.style.width = w + 'px'; d.style.height = h + 'px';
+  if (k.t === 'char') {
+    if (k.s) { d.classList.add('two'); d.innerHTML = '<sup>' + esc(k.s) + '</sup>' + esc(k.l); }
+    else d.textContent = k.l.length === 1 ? k.l.toUpperCase() : k.l;
+  } else if (k.t === 'mod') {
+    d.classList.add('mod'); if (k.r) d.classList.add('r');
+    d.innerHTML = '<b>' + k.sym + '</b>' + k.l; d.dataset.mod = k.id;
+  } else if (k.t === 'f') {
+    d.classList.add('fk'); d.innerHTML = '<b>' + k.ic + '</b>' + k.l;
+  } else {
+    if (['del','tab','caps','ret','esc'].includes(k.id) && k.l.length > 2) { d.classList.add('fn2'); if (k.r) d.classList.add('r'); d.textContent = k.l; }
+    else d.textContent = k.l;
+    if (k.id === 'caps') { const led = document.createElement('i'); led.className = 'led' + (S.caps ? ' on' : ''); d.appendChild(led); }
+  }
+  d.addEventListener('pointerdown', e => { e.preventDefault(); d.classList.add('down'); press(k, d); });
+  const up = () => d.classList.remove('down');
+  d.addEventListener('pointerup', up); d.addEventListener('pointerleave', up);
+  return d;
+}
+
+/* ---------- key semantics ---------- */
+const MODSYM = {ctrl:'⌃', opt:'⌥', shift:'⇧', cmd:'⌘', fn:'fn'};
+function activeMods(){ return Object.keys(S.mods).filter(m => S.mods[m] > 0); }
+function consumeMods(){ for (const m in S.mods) if (S.mods[m] === 1) S.mods[m] = 0; refreshMods(); }
+function refreshMods(){
+  $$('[data-mod]').forEach(el => {
+    const st = S.mods[el.dataset.mod];
+    el.classList.toggle('latched', st === 1); el.classList.toggle('locked', st === 2);
+  });
+  $$('.led').forEach(l => l.classList.toggle('on', S.caps));
+}
+function press(k, el){
+  haptic(el);
+  if (k.t === 'mod') {
+    const m = k.id, now = performance.now();
+    if (!S.sticky) { S.mods[m] = S.mods[m] ? 0 : 1; }
+    else if (S.mods[m] === 0) S.mods[m] = 1;
+    else if (S.mods[m] === 1 && now - (S.lastModTap[m] || 0) < 380) S.mods[m] = 2;
+    else S.mods[m] = 0;
+    S.lastModTap[m] = now; refreshMods(); return;
+  }
+  const mods = activeMods();
+  const prefix = mods.filter(m => m !== 'fn').map(m => MODSYM[m]).join('');
+  if (k.t === 'f') { toast(prefix + k.l + ' → Mac'); consumeMods(); return; }
+  if (k.t === 'char') {
+    if (S.mods.fn && /^[0-9\-=]$/.test(k.l)) { const map = {'1':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'0':10,'-':11,'=':12}; toast('F' + map[k.l] + ' → Mac'); consumeMods(); return; }
+    if (S.mods.cmd || S.mods.ctrl || S.mods.opt) {
+      const keyName = (S.mods.shift && k.s) ? k.s : k.l.toUpperCase();
+      toast(prefix + keyName + ' → Mac' + shortcutName(mods, k.l)); consumeMods(); return;
+    }
+    let ch = k.l;
+    if (S.mods.shift) ch = k.s || k.l.toUpperCase();
+    else if (S.caps && /[a-z]/.test(ch)) ch = ch.toUpperCase();
+    type(ch); consumeMods(); return;
+  }
+  switch (k.id) {
+    case 'space': if (S.mods.cmd) { toast('⌘Space → Spotlight'); consumeMods(); return; } type(' '); break;
+    case 'del': S.typed = S.typed.slice(0, -1); renderTyped(); break;
+    case 'ret': type('\n'); break;
+    case 'tab': if (S.mods.cmd) { showSwitcher(1); setTimeout(hideSwitcher, 900); toast('⌘Tab → app switcher'); consumeMods(); return; } type('  '); break;
+    case 'caps': S.caps = !S.caps; refreshMods(); toast('caps lock ' + (S.caps ? 'on' : 'off')); break;
+    case 'esc': toast(prefix + 'esc → Mac'); break;
+    case 'lock': toast('Lock screen → Mac (⌃⌘Q)'); break;
+    case 'tokeys': setDeckMode('keys'); return;
+    default: toast(prefix + ({up:'↑',down:'↓',left:'←',right:'→'}[k.id] || k.id) + ' → Mac');
+  }
+  consumeMods();
+}
+function shortcutName(m, l){
+  const k = l.toLowerCase(), c = m.includes('cmd') && m.length === 1;
+  const names = {s:'save', c:'copy', v:'paste', z:'undo', w:'close tab', t:'new tab', f:'find', p:'quick open', q:'quit', a:'select all', x:'cut', n:'new', o:'open', r:'run'};
+  return c && names[k] ? '  (' + names[k] + ')' : '';
+}
+function type(ch){ S.typed = (S.typed + ch).slice(-160); renderTyped(); }
+function renderTyped(){
+  $$('.typed').forEach(t => { t.innerHTML = esc(S.typed).replace(/\n/g, '<br>        '); });
+}
+
+/* ---------- Mac desktop builder ---------- */
+const CODE = [
+  '// PathRacer.swift — ClamshellKit/Paths',
+  'actor PathRacer {',
+  '    private var winners: [NetworkKey: PathKind] = [:]',
+  '',
+  '    func race(_ paths: [Path], on net: NetworkKey) async throws -> Session {',
+  '        let ordered = paths.ranked(remembered: winners[net])',
+  '        return try await withThrowingTaskGroup(of: Session.self) { group in',
+  '            for (i, path) in ordered.enumerated() {',
+  '                group.addTask {',
+  '                    try await Task.sleep(for: .milliseconds(150 * i))',
+  '                    return try await path.handshake(.ikpsk2)',
+  '                }',
+  '            }',
+  '            guard let first = try await group.next() else {',
+  '                throw RaceError.noPath',
+  '            }',
+  '            group.cancelAll()',
+  '            winners[net] = first.path.kind',
+  '            return first',
+  '        }',
+  '    }',
+  '',
+  '    func promote(_ session: Session, to better: Path) async {',
+  '        // keep keys; move packets; never split one frame across paths',
+  '        await session.migrate(to: better, overlap: .milliseconds(500))',
+  '    }',
+  '}',
+];
+function hl(line){
+  const re = /(\/\/.*$)|("(?:[^"\\]|\\.)*")|\b(actor|func|let|var|return|try|await|async|throws|throw|for|in|private|guard|else|of)\b|\b([A-Z][A-Za-z0-9]*)\b|\b(\d+)\b/g;
+  let out = '', last = 0;
+  line.replace(re, (m, c, s, k, t, n, off) => {
+    out += esc(line.slice(last, off));
+    out += '<span class="' + (c ? 'c' : s ? 's' : k ? 'k' : t ? 't' : 'n') + '">' + esc(m) + '</span>';
+    last = off + m.length; return m;
+  });
+  return out + esc(line.slice(last));
+}
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const DOCK = [['#2F8F86','C'],['#E5603B','T'],['#5468D4','X'],['#8D5BD0','B'],['#D49A2A','N'],['#3D7FD6','M'],['#2E3440','⌘'],['#9AA3B0','⌫']];
+function buildMac(el, kind){
+  const W = el.clientWidth || parseInt(el.style.width), H = el.clientHeight || parseInt(el.style.height);
+  const portrait = H > W;
+  const mac = document.createElement('div'); mac.className = 'mac';
+  let content;
+  if (kind === 'doc') {
+    content = `<div class="win" style="left:10px;right:10px;top:30px;bottom:60px"><div class="tb"><i></i><i></i><i></i><span>Pull request #42 · Path racing</span></div>
+      <div class="doc"><h3>Race UDP and WSS paths in parallel</h3>
+      <p>Starts P1–P3 with a 150 ms stagger and keeps the winner per network. Promotion to a better path keeps the Noise session; only the transport moves.</p>
+      <div class="diff"><span class="del">-  try await sequentialFallback(paths)</span>
+<span class="add">+  let s = try await racer.race(paths, on: net)</span>
+<span class="add">+  await racer.promote(s, to: udp)</span></div>
+      <p><b>Tests:</b> netsim <span class="mono">work-443</span>: cold connect 1.4 s; UDP→WSS handover gap 210 ms; 0 IDRs.</p>
+      <p style="color:#8C939E">Typed here: <span class="typed"></span><span class="caret"></span></p></div></div>`;
+  } else {
+    const sideW = portrait ? 0 : 150;
+    const lines = CODE.map((l, i) => `<div class="ln"><em>${i+1}</em><span>${hl(l)}</span></div>`).join('') +
+      `<div class="ln"><em>${CODE.length+1}</em><span>    <span class="typed"></span><span class="caret"></span></span></div>`;
+    content = `<div class="win" style="left:${portrait?8:14}px;right:${portrait?8:14}px;top:30px;bottom:56px"><div class="tb"><i></i><i></i><i></i><span>PathRacer.swift — Clamshell</span></div>
+      <div class="ed">${sideW ? `<div class="side"><div>▾ shared</div><div>&nbsp;&nbsp;▾ Paths</div><div class="sel">&nbsp;&nbsp;&nbsp;&nbsp;PathRacer.swift</div><div>&nbsp;&nbsp;&nbsp;&nbsp;Keepalive.swift</div><div>&nbsp;&nbsp;▸ Session</div><div>&nbsp;&nbsp;▸ Wire</div><div>&nbsp;&nbsp;▸ RateControl</div><div>▸ mac-host</div><div>▸ ios-client</div><div>▸ tools</div></div>` : ''}
+      <div style="flex:1;display:flex;flex-direction:column;min-width:0"><div class="code"><div class="lines">${lines}</div></div>
+      <div class="term"><span class="ok">✓</span> swift test --filter PathRacerTests<br>Executed 38 tests, with 0 failures (0.412 s)<br>$ <span class="caret"></span></div></div></div></div>`;
+  }
+  mac.innerHTML = `<div class="wall"></div>
+    <div class="mbar"><b>◆</b><b>Code</b><span>File</span><span>Edit</span><span>Selection</span>${portrait?'':'<span>View</span><span>Go</span><span>Run</span><span>Terminal</span>'}<div class="r"><span>⌁</span><span>${portrait?'10:42':'Sun 15 Nov 10:42'}</span></div></div>
+    ${content}
+    <div class="dock">${DOCK.slice(0, portrait ? 6 : 8).map(([c,l]) => `<i style="background:${c}">${l}</i>`).join('')}</div>
+    <div class="dim"></div>
+    <div class="mc"><div class="spaces"><span>Desktop 1</span><span>Desktop 2</span><span>Desktop 3</span></div><div class="grid"><div class="th"><b>Code</b></div><div class="th"><b>Terminal</b></div><div class="th"><b>Browser</b></div><div class="th"><b>Notes</b></div><div class="th"><b>Mail</b></div><div class="th"><b>Music</b></div></div></div>
+    <div class="as">${DOCK.slice(0,6).map(([c,l],i)=>`<i style="background:${c}" class="${i===1?'sel':''}">${l}</i>`).join('')}</div>
+    <div class="banner"></div>
+    <div class="hud"></div>
+    <div class="mtoast"></div>
+    <svg class="cursor" viewBox="0 0 18 24"><path d="M2 1.5 L2 19 L6.6 14.8 L9.6 21.6 L12.6 20.3 L9.7 13.6 L15.8 13.6 Z" fill="#fff" stroke="#111" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
+  el.appendChild(mac);
+  const m = { el: mac, W, H, x: W * 0.55, y: H * 0.45, scrollY: 0 };
+  MACS.push(m); placeCursor(m);
+  $('.mc', mac).addEventListener('click', () => $('.mc', mac).classList.remove('on'));
+  return m;
+}
+const MACS = [];
+function placeCursor(m){ m.x = Math.max(0, Math.min(m.W - 2, m.x)); m.y = Math.max(0, Math.min(m.H - 2, m.y)); $('.cursor', m.el).style.transform = `translate(${m.x - 2}px, ${m.y - 1.5}px)`; }
+function ripple(m){ const r = document.createElement('div'); r.className = 'ripple'; r.style.left = m.x + 'px'; r.style.top = m.y + 'px'; m.el.appendChild(r); setTimeout(() => r.remove(), 500); }
+function curMac(){ return activeMac || MACS[0]; }
+let activeMac = null;
+let toastT = null;
+function toast(msg){
+  const m = curMac(); if (!m) return;
+  const t = $('.mtoast', m.el); t.textContent = msg; t.classList.add('on');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 1400);
+}
+function scrollMac(m, dy){
+  const lines = $('.code .lines', m.el); if (!lines) return;
+  m.scrollY = Math.max(-220, Math.min(0, m.scrollY + (S.natural ? -dy : dy) * 0.6));
+  lines.style.transform = `translateY(${m.scrollY}px)`;
+}
+function showMC(on){ const m = curMac(); $('.mc', m.el).classList.toggle('on', on); }
+function switchSpace(dir){
+  const m = curMac(); S.space = Math.max(1, Math.min(3, S.space + dir));
+  const w = $('.wall', m.el); w.style.transform = `translateX(${-dir * 40}px)`; setTimeout(() => w.style.transform = '', 260);
+  toast('3-finger swipe → Desktop ' + S.space + '  (⌃' + (dir > 0 ? '→' : '←') + ')');
+}
+let swIdx = 1;
+function showSwitcher(step){ const m = curMac(); const as = $('.as', m.el); as.classList.add('on'); const ic = $$('i', as); swIdx = (swIdx + step + ic.length) % ic.length; ic.forEach((x, i) => x.classList.toggle('sel', i === swIdx)); }
+function hideSwitcher(){ MACS.forEach(m => $('.as', m.el).classList.remove('on')); }
+
+/* ---------- trackpad ---------- */
+function accel(v){ // v in pt/ms on the pad; returns multiplier
+  const vn = Math.min(v / 2.5, 1);
+  return S.gain * (0.35 + 2.6 * Math.pow(vn, S.gamma - 0.6)) ;
+}
+function attachPad(pad, getMac, opts = {}){
+  const dot = document.createElement('div'); dot.className = 'touch'; pad.appendChild(dot);
+  const lock = document.createElement('div'); lock.className = 'lock'; lock.textContent = 'drag lock'; pad.appendChild(lock);
+  const hint = document.createElement('div'); hint.className = 'hint'; hint.textContent = opts.hint || 'drag · wheel = 2-finger scroll · right-click = 2-finger tap · ⌥-drag = 3 fingers · ⌃-drag = 4 fingers'; pad.appendChild(hint);
+  let down = null, last = null, moved = 0, mode = null, gx = 0, gy = 0, lastTap = 0;
+  const local = e => { const r = pad.getBoundingClientRect(); return [(e.clientX - r.left) / scale, (e.clientY - r.top) / scale]; };
+  pad.addEventListener('pointerdown', e => {
+    if (e.button === 2) return;
+    pad.setPointerCapture(e.pointerId); activeMac = getMac();
+    const [x, y] = local(e); dot.style.left = x + 'px'; dot.style.top = y + 'px'; dot.classList.add('on');
+    down = { t: performance.now(), x: e.clientX, y: e.clientY }; last = { t: down.t, x: e.clientX, y: e.clientY };
+    moved = 0; gx = gy = 0; mode = e.altKey ? 'three' : e.ctrlKey ? 'four' : 'one';
+    if (mode === 'four') { showSwitcher(0); }
+    if (performance.now() - lastTap < 300) { lock.classList.add('on'); toast('drag lock: holding mouse button'); }
+  });
+  pad.addEventListener('pointermove', e => {
+    if (!down) return;
+    const [x, y] = local(e); dot.style.left = x + 'px'; dot.style.top = y + 'px';
+    const now = performance.now(), dt = Math.max(1, now - last.t);
+    const dx = (e.clientX - last.x) / scale, dy = (e.clientY - last.y) / scale;
+    last = { t: now, x: e.clientX, y: e.clientY }; moved += Math.hypot(dx, dy); gx += dx; gy += dy;
+    const m = getMac();
+    if (mode === 'one') { const g = accel(Math.hypot(dx, dy) / dt) * (opts.ratio || 1); m.x += dx * g; m.y += dy * g; placeCursor(m); }
+    else if (mode === 'four') { if (Math.abs(gx) > 80) { showSwitcher(gx > 0 ? 1 : -1); gx = 0; } }
+  });
+  const end = e => {
+    if (!down) return;
+    dot.classList.remove('on');
+    const dt = performance.now() - down.t, m = getMac();
+    if (mode === 'three') {
+      if (Math.abs(gx) > Math.abs(gy) && Math.abs(gx) > 40) switchSpace(gx < 0 ? 1 : -1);
+      else if (gy < -40) { showMC(true); toast('3-finger up → Mission Control (⌃↑)'); }
+      else if (gy > 40) toast('3-finger down → App Exposé (⌃↓)');
+    } else if (mode === 'four') { hideSwitcher(); toast('4-finger swipe → app switcher → released'); }
+    else if (moved < 4 && dt < 260) {
+      if (lock.classList.contains('on')) { lock.classList.remove('on'); toast('drag lock released'); }
+      else if (S.tapClick) { ripple(m); haptic(pad); toast('tap → click'); lastTap = performance.now(); }
+    }
+    down = null;
+  };
+  pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end);
+  pad.addEventListener('contextmenu', e => { e.preventDefault(); activeMac = getMac(); const m = getMac(); ripple(m); haptic(pad); toast('2-finger tap → right-click'); });
+  pad.addEventListener('wheel', e => { e.preventDefault(); activeMac = getMac(); scrollMac(getMac(), e.deltaY); clearTimeout(pad._w); pad._w = setTimeout(() => toast('2-finger scroll → momentum (phase ended)'), 160); }, { passive: false });
+}
+function haptic(el){ if (!S.haptics || !el) return; el.classList.remove('haptic'); void el.offsetWidth; el.classList.add('haptic'); }
+
+/* ---------- laptop deck ---------- */
+let laptopMac;
+function setDeckMode(m){ S.deckMode = m; $$('#deckSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m)); renderDeck(); }
+function renderDeck(){
+  const body = $('#deckBody'); body.innerHTML = '';
+  const W = 939 - 24;
+  const legend = document.createElement('div'); legend.className = 'legend' + (S.legend ? ' on' : ''); legend.innerHTML = LEGEND; body.appendChild(legend);
+  legend.addEventListener('click', () => { S.legend = false; legend.classList.remove('on'); $$('[data-act="legend"]').forEach(b => b.classList.remove('on')); });
+  if (S.deckMode === 'deck' || S.deckMode === 'keys') {
+    const kb = document.createElement('div'); kb.className = 'kb'; body.appendChild(kb);
+    const keys = S.deckMode === 'keys';
+    const frow = keys || S.frow;
+    buildKeyboard(kb, FULL, { width: W, rowH: keys ? 84 : 54, frow, grab: !keys, fH: keys ? 60 : 34 });
+    if (!keys) { const pad = document.createElement('div'); pad.className = 'pad'; pad.style.margin = '6px auto 0'; pad.style.width = '72%'; body.appendChild(pad); attachPad(pad, () => laptopMac, { ratio: 1.5 }); }
+    else { const strip = document.createElement('div'); strip.style.cssText = 'height:20px;display:grid;place-items:center;font-size:11px;color:var(--muted);cursor:pointer'; strip.textContent = 'Keys mode: trackpad hidden · tap for Deck'; strip.onclick = () => setDeckMode('deck'); body.appendChild(strip); }
+  } else if (S.deckMode === 'split') {
+    const sp = document.createElement('div'); sp.className = 'split'; body.appendChild(sp);
+    const L = document.createElement('div'); L.className = 'half kb'; const P = document.createElement('div'); P.className = 'pad'; const R = document.createElement('div'); R.className = 'half kb right';
+    sp.append(L, P, R);
+    buildKeyboard(L, SPLIT_L, { width: 320, rowH: 98, gap: 6 }); buildKeyboard(R, SPLIT_R, { width: 330, rowH: 98, gap: 6, align: 'right' });
+    attachPad(P, () => laptopMac, { ratio: 2.4, hint: 'thumb trackpad' });
+  } else if (S.deckMode === 'pad') {
+    const kb = document.createElement('div'); kb.className = 'kb'; body.appendChild(kb);
+    buildKeyboard(kb, [PAD_ROW], { width: W, rowH: 46 });
+    const pad = document.createElement('div'); pad.className = 'pad'; body.appendChild(pad); attachPad(pad, () => laptopMac, { ratio: 1.1 });
+  }
+}
+const LEGEND = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b style="font-size:13px">Trackpad gestures (same as a MacBook)</b><span style="color:var(--muted)">click to close</span></div>
+<table>
+<tr><td>1-finger move</td><td>Pointer (drawn locally, ≈8 ms)</td><td class="try">drag</td></tr>
+<tr><td>Tap / press</td><td>Click · long-press = force click</td><td class="try">click</td></tr>
+<tr><td>2-finger tap</td><td>Right-click</td><td class="try">right-click</td></tr>
+<tr><td>2-finger scroll</td><td>Pixel scroll with momentum and elastic bounce</td><td class="try">wheel</td></tr>
+<tr><td>Pinch</td><td>Zoom (⌘+ / ⌘−, or real magnify behind a flag)</td><td class="try">—</td></tr>
+<tr><td>3-finger ← →</td><td>Switch Space (your ⌃← / ⌃→ bindings)</td><td class="try">⌥-drag</td></tr>
+<tr><td>3-finger ↑ / ↓</td><td>Mission Control / App Exposé</td><td class="try">⌥-drag</td></tr>
+<tr><td>4-finger ← →</td><td>App switcher (holds ⌘, Tab per 80 pt)</td><td class="try">⌃-drag</td></tr>
+<tr><td>Double-tap-drag</td><td>Drag lock (tap again to release)</td><td class="try">dbl-click, drag</td></tr>
+<tr><td>Edge swipe up</td><td>Show the Dock (Flat: bottom edge)</td><td class="try">Flat tab</td></tr>
+</table>`;
+
+/* ---------- flat ---------- */
+let flatMac;
+function setupFlat(){
+  const scr = $('#flatScreen'); flatMac = buildMac(scr, 'code');
+  const pill = document.createElement('div'); pill.className = 'floatpill';
+  pill.innerHTML = `<div class="seg" style="margin:0"><button data-fi="direct" class="on">Direct</button><button data-fi="pad">Trackpad</button></div><button class="ibtn on" id="miniBtn" title="Keyboard">⌨</button><button class="ibtn" data-act="hud" title="HUD">◱</button><div class="pill" style="border:0"><span class="dot" data-netdot></span><span data-netlabel></span></div>`;
+  scr.appendChild(pill);
+  const mk = document.createElement('div'); mk.className = 'minikb'; mk.innerHTML = '<div class="bar"><span>drag to move</span><span>⌨ mini</span></div><div class="kb"></div>'; scr.appendChild(mk);
+  buildKeyboard($('.kb', mk), MINI, { width: 540, rowH: 40, gap: 5 });
+  // drag the mini keyboard
+  const bar = $('.bar', mk); let dr = null;
+  bar.addEventListener('pointerdown', e => { bar.setPointerCapture(e.pointerId); dr = { x: e.clientX, y: e.clientY, l: mk.offsetLeft, t: mk.offsetTop }; });
+  bar.addEventListener('pointermove', e => { if (!dr) return; mk.style.left = Math.max(0, Math.min(1335 - 560, dr.l + (e.clientX - dr.x) / scale)) + 'px'; mk.style.top = Math.max(24, Math.min(939 - 120, dr.t + (e.clientY - dr.y) / scale)) + 'px'; });
+  bar.addEventListener('pointerup', () => dr = null);
+  $('#miniBtn').onclick = e => { const on = mk.style.display !== 'none'; mk.style.display = on ? 'none' : ''; e.currentTarget.classList.toggle('on', !on); };
+  $$('[data-fi]', pill).forEach(b => b.onclick = () => { S.flatInput = b.dataset.fi; $$('[data-fi]', pill).forEach(x => x.classList.toggle('on', x === b)); toast(S.flatInput === 'direct' ? 'Direct touch: tap = click at finger' : 'Trackpad: the whole screen moves the pointer'); });
+  // input surface over the mac
+  const surf = document.createElement('div'); surf.style.cssText = 'position:absolute;inset:22px 0 22px 0;z-index:6;touch-action:none'; scr.appendChild(surf);
+  let d = null, mv = 0;
+  surf.addEventListener('pointerdown', e => { activeMac = flatMac; surf.setPointerCapture(e.pointerId); d = { x: e.clientX, y: e.clientY, t: performance.now() }; mv = 0;
+    if (S.flatInput === 'direct') { const r = scr.getBoundingClientRect(); flatMac.x = (e.clientX - r.left) / scale; flatMac.y = (e.clientY - r.top) / scale; placeCursor(flatMac); } });
+  surf.addEventListener('pointermove', e => { if (!d) return; const dx = (e.clientX - d.x) / scale, dy = (e.clientY - d.y) / scale; d.x = e.clientX; d.y = e.clientY; mv += Math.hypot(dx, dy);
+    if (S.flatInput === 'pad') { const g = accel(Math.hypot(dx, dy) / 8); flatMac.x += dx * g; flatMac.y += dy * g; } else { flatMac.x += dx; flatMac.y += dy; } placeCursor(flatMac); });
+  surf.addEventListener('pointerup', () => { if (d && mv < 4) { ripple(flatMac); toast(S.flatInput === 'direct' ? 'tap → click at finger' : 'tap → click'); } else if (d && S.flatInput === 'direct') toast('drag → mouse drag'); d = null; });
+  surf.addEventListener('contextmenu', e => { e.preventDefault(); activeMac = flatMac; ripple(flatMac); toast(S.flatInput === 'direct' ? 'long-press → right-click' : '2-finger tap → right-click'); });
+  surf.addEventListener('wheel', e => { e.preventDefault(); activeMac = flatMac; scrollMac(flatMac, e.deltaY); }, { passive: false });
+  const edge = document.createElement('div'); edge.className = 'edge'; edge.title = 'Drag up to reveal the Dock'; scr.appendChild(edge);
+  let ey = null;
+  edge.addEventListener('pointerdown', e => { edge.setPointerCapture(e.pointerId); ey = e.clientY; });
+  edge.addEventListener('pointermove', e => { if (ey !== null && (ey - e.clientY) / scale > 24) { ey = null; activeMac = flatMac; const dk = $('.dock', flatMac.el); dk.classList.add('peek'); setTimeout(() => dk.classList.remove('peek'), 1200); toast('edge swipe → Dock revealed'); } });
+  edge.addEventListener('pointerup', () => ey = null);
+}
+
+/* ---------- book ---------- */
+let bookMac;
+function setupBook(){
+  bookMac = buildMac($('#bookLeft'), 'doc');
+  renderBook();
+  $('#bookKbBtn').onclick = () => { S.bookKb = !S.bookKb; renderBook(); };
+}
+function renderBook(){
+  const b = $('#bookBody'); b.innerHTML = '';
+  $('#bookKbBtn').classList.toggle('on', S.bookKb);
+  const pad = document.createElement('div'); pad.className = 'pad'; b.appendChild(pad); attachPad(pad, () => bookMac, { ratio: 1.2, hint: 'drag · wheel · right-click · ⌥-drag' });
+  if (S.bookKb) { const kb = document.createElement('div'); kb.className = 'kb'; b.appendChild(kb); buildKeyboard(kb, FULL, { width: 667 - 24, rowH: 46, gap: 5 }); }
+}
+
+/* ---------- cover ---------- */
+const TILES = [['🔒︎','Lock Mac','⌃⌘Q'],['☾','Sleep display','Mac keeps running'],['☀︎','Wake','Wake the display'],['⏏︎','Disconnect all','Ends every session','danger'],['⧉','Send clipboard','Needs clipboard sync'],['▯','Phone session','Use the Mac here']];
+function setupCover(){
+  const t = $('#coverTiles');
+  t.innerHTML = TILES.map(([ic, b, s, cls], i) => `<div class="tile ${cls || ''}" data-i="${i}" role="button" tabindex="0"><div class="ic">${ic}</div><div><b>${b}</b><br><small>${s}</small></div></div>`).join('');
+  $$('.tile', t).forEach(el => el.onclick = () => {
+    const i = +el.dataset.i;
+    if (i === 3) { $('#coverSheet').classList.add('on'); return; }
+    if (i === 4 && !S.clip) { phToast('coverToast', 'Turn on clipboard sync in Settings first'); return; }
+    if (i === 5) { openCoverSession(); return; }
+    phToast('coverToast', 'Sent: ' + TILES[i][1]);
+  });
+  $$('#coverSheet [data-sheet]').forEach(b => b.onclick = () => { $('#coverSheet').classList.remove('on'); if (b.dataset.sheet === 'yes') phToast('coverToast', 'All sessions disconnected'); });
+}
+let coverMac = null;
+function openCoverSession(){
+  const cs = $('#coverSession'); cs.style.display = 'block'; $('#glance').style.display = 'none';
+  if (!coverMac) {
+    cs.style.width = '699px'; cs.style.height = '1017px'; coverMac = buildMac(cs, 'code');
+    const disc = document.createElement('div'); disc.className = 'pad'; disc.style.cssText = 'position:absolute;right:24px;bottom:90px;width:230px;height:230px;border-radius:50%;z-index:14;opacity:.92';
+    cs.appendChild(disc); attachPad(disc, () => coverMac, { ratio: 1.6, hint: ' ' });
+    const back = document.createElement('button'); back.className = 'chip'; back.textContent = '‹ Glance'; back.style.cssText = 'position:absolute;left:16px;bottom:24px;z-index:15;padding:8px 12px;font-size:14px';
+    back.onclick = () => { cs.style.display = 'none'; $('#glance').style.display = ''; };
+    cs.appendChild(back);
+    applyHud(); applyBanner();
+  }
+}
+function phToast(id, msg){ const t = $('#' + id); t.textContent = msg; t.classList.add('on'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('on'), 1700); }
+
+/* ---------- pairing ---------- */
+let pairStep = 0, pairFails = 0, pairTimer = null, pairLeft = 120;
+const SAS = '482 913', DECOYS = ['731 064', '482 913', '295 418'];
+function qrSvg(){
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const N = 29, c = 8; let r = '';
+  const finder = (x, y) => r += `<rect x="${x*c}" y="${y*c}" width="${7*c}" height="${7*c}" fill="#111"/><rect x="${(x+1)*c}" y="${(y+1)*c}" width="${5*c}" height="${5*c}" fill="#fff"/><rect x="${(x+2)*c}" y="${(y+2)*c}" width="${3*c}" height="${3*c}" fill="#111"/>`;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const inF = (x < 8 && y < 8) || (x > N - 9 && y < 8) || (x < 8 && y > N - 9);
+    if (!inF && rnd() > 0.52) r += `<rect x="${x*c}" y="${y*c}" width="${c}" height="${c}" fill="#111"/>`;
+  }
+  finder(0, 0); finder(N - 7, 0); finder(0, N - 7);
+  return `<svg viewBox="-16 -16 ${N*c+32} ${N*c+32}" width="250" height="250" style="background:#fff;border-radius:14px"><rect x="-16" y="-16" width="${N*c+32}" height="${N*c+32}" fill="#fff"/>${r}</svg>`;
+}
+function renderPair(){
+  const P = $('#pairPhone'), M = $('#pairMac');
+  const phone = [
+    `<div class="top"><h2>Welcome to</h2><h1>Clamshell</h1><div style="color:var(--muted);font-size:15px;line-height:1.5;margin-top:8px">Pair once with your Mac at home, on the same Wi-Fi. After that it connects from anywhere: home, work or cellular.</div></div>
+     <div class="body"><div class="card" style="font-size:14px;line-height:1.55"><b>You’ll need</b><br>• Clamshell running on your Mac<br>• Both devices on your home network<br>• 30 seconds</div>
+     <button class="btn" data-pp="1" ${pairStep < 1 ? 'disabled' : ''}>Scan pairing code</button>
+     <div style="font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px">${pairStep < 1 ? 'First open the pairing window on the Mac →' : 'Pairing window is open on your Mac'}</div></div>`,
+    `<div class="top"><h2>Pairing</h2><h1>Scan the code</h1></div><div class="body"><div class="cam"><div class="frame"></div><div class="scan"></div></div>
+     <button class="btn" data-pp="scan">Simulate scan</button><div style="height:8px"></div><button class="btn sec">Enter 16-character code instead</button></div>`,
+    `<div class="top"><h2>Pairing</h2><h1>Check the code</h1><div style="color:var(--muted);font-size:15px;line-height:1.5">Choose this code on your Mac.</div></div>
+     <div class="body"><div class="card"><div class="sas">${SAS}</div><div style="text-align:center;color:var(--muted);font-size:14px"><span class="spin" style="border-top-color:var(--accent);border-color:var(--border)"></span>&nbsp; Waiting for you to confirm on the Mac…</div></div>
+     <div class="card" style="font-size:13px;color:var(--muted);line-height:1.5">The code is derived from this pairing’s encryption keys. If someone else tried to pair, the codes wouldn’t match.</div></div>`,
+    `<div class="top"><h2>Paired</h2><h1>You’re set</h1></div><div class="body"><div class="card"><div class="statrow"><span>Mac</span><span>Home MacBook Pro</span></div><div class="statrow"><span>This device</span><span>iPhone Duo</span></div><div class="statrow"><span>Unlock with</span><span>Touch ID</span></div><div class="statrow"><span>Key fingerprint</span><span class="mono">7f3a 91c2 …</span></div></div>
+     <button class="btn" data-pp="done">Connect now</button><div style="height:8px"></div><button class="btn sec" data-pp="reset">Restart demo</button></div>`,
+  ];
+  const ps = pairStep <= 1 ? 0 : pairStep === 2 ? 1 : pairStep === 3 ? 2 : 3;
+  const phoneIdx = pairStep === 0 ? 0 : pairStep === 1 ? 0 : pairStep === 2 ? 1 : pairStep === 3 ? 2 : 3;
+  P.innerHTML = phone[phoneIdx];
+  const mac = [
+    `<div style="font-size:15px;line-height:1.55">Pairing lets one iPhone connect to this Mac from anywhere. You’ll confirm a code on both screens.</div>
+     <div class="card" style="margin-top:14px;font-size:13px;background:var(--surface2)"><b>Admin approval required</b><br><span style="color:var(--muted)">macOS will ask for your Mac login password to open the pairing window. (Mockup: no real password field.)</span></div>
+     <button class="btn" style="width:auto;padding:10px 18px" data-pm="auth">Open pairing window…</button>`,
+    `<div style="display:flex;gap:24px;align-items:center">${qrSvg()}<div><div style="font-size:20px;font-weight:700">Scan with Clamshell on your iPhone</div>
+     <div style="color:var(--muted);margin:8px 0 14px;font-size:14px;line-height:1.5">Home network only. The window closes in <b id="pairCount">${pairLeft}</b> s.</div>
+     <div class="mono" style="font-size:13px;color:var(--muted)">Manual code: K7QD-2MXA-9FHT-W4ZE</div></div></div>`,
+    `<div style="font-size:15px">An iPhone is trying to pair: <b>iPhone Duo</b> · 192.168.1.41</div>`,
+    `<div style="font-size:18px;font-weight:700">Which code does your iPhone show?</div><div style="color:var(--muted);font-size:14px;margin-top:4px">Pick the matching one. A wrong pick cancels the attempt (${3 - pairFails} left).</div>
+     <div class="choice">${DECOYS.map(d => `<button data-sas="${d}">${d}</button>`).join('')}</div><div id="sasErr" style="color:var(--danger);font-size:13px;min-height:18px"></div>`,
+    `<div style="font-size:18px;font-weight:700;color:var(--tide)">✓ Paired</div><div class="list" style="margin-top:10px"><div class="it"><div>Name<small>Shown in notifications and the Devices menu</small></div><input value="iPhone Duo" style="font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text)"></div>
+     <div class="it"><div>Fingerprint</div><span class="mono">7f3a 91c2 …</span></div></div>`,
+  ];
+  const macIdx = pairStep === 0 ? 0 : pairStep === 1 || pairStep === 2 ? 1 : pairStep === 3 ? 3 : 4;
+  M.innerHTML = mac[macIdx];
+  $$('[data-pm]', M).forEach(b => b.onclick = () => { pairStep = 1; pairFails = 0; pairLeft = 120; startPairTimer(); renderPair(); });
+  $$('[data-pp]', P).forEach(b => b.onclick = () => {
+    const a = b.dataset.pp;
+    if (a === '1') pairStep = 2; else if (a === 'scan') pairStep = 3; else if (a === 'reset') { pairStep = 0; clearInterval(pairTimer); } else if (a === 'done') { showView('laptop'); return; }
+    renderPair();
+  });
+  $$('[data-sas]', M).forEach(b => b.onclick = () => {
+    if (b.dataset.sas === SAS) { pairStep = 4; clearInterval(pairTimer); renderPair(); }
+    else { pairFails++; if (pairFails >= 3) { pairStep = 0; clearInterval(pairTimer); renderPair(); $('#pairMac').insertAdjacentHTML('afterbegin', '<div style="color:var(--danger);margin-bottom:10px;font-size:14px">Three wrong codes. The pairing window is closed.</div>'); }
+           else { pairStep = 1; renderPair(); $('#pairMac').insertAdjacentHTML('afterbegin', '<div style="color:var(--danger);margin-bottom:10px;font-size:14px">The code didn’t match, so that attempt was rejected. Scan again on the iPhone.</div>'); } }
+  });
+}
+function startPairTimer(){ clearInterval(pairTimer); pairTimer = setInterval(() => { pairLeft--; const c = $('#pairCount'); if (c) c.textContent = pairLeft; if (pairLeft <= 0) { clearInterval(pairTimer); pairStep = 0; renderPair(); } }, 1000); }
+
+/* ---------- network check ---------- */
+const NETS = {
+  work: { rows: [['no','P1 · LAN direct (UDP)','Not on your home network'],['no','P2 · Home direct UDP :48213','No reply in 1.5 s: UDP is blocked here'],['ok','P3 · Home WSS on 443','41 ms · via proxy proxy.corp.example:8080 · TLS inspected (issuer “Corp Inspection CA”)'],['ok','P4 · HTTPS stream','44 ms · fallback available']],
+          verdict: '<b>UDP is blocked; WebSocket on 443 works through your proxy.</b> TLS is inspected, which is fine: Clamshell’s own encryption is inside, so the proxy sees only ciphertext. Expect ~40 ms. Next time on this network Clamshell goes straight to P3.' },
+  home: { rows: [['ok','P1 · LAN direct (UDP)','3 ms · Home MacBook Pro.local'],['ok','P2 · Home direct UDP :48213','4 ms (router loopback)'],['ok','P3 · Home WSS on 443','6 ms'],['ok','P4 · HTTPS stream','7 ms']],
+          verdict: '<b>On your home network:</b> LAN UDP, ~3 ms. 120 fps and 4:4:4 if the Duo supports it.' },
+  cell: { rows: [['no','P1 · LAN direct (UDP)','Not on your home network'],['ok','P2 · Home direct UDP :48213','58 ms · loss 0.4%'],['ok','P3 · Home WSS on 443','63 ms'],['—','P4 · HTTPS stream','Skipped (not needed)']],
+          verdict: '<b>Direct UDP works on cellular:</b> ~58 ms. FEC on (RTT > 30 ms). Cellular is marked “expensive”, so quality is capped at the Work tier.' },
+};
+let netS = 'work';
+function renderNet(ran){
+  const n = NETS[netS];
+  $('#netPaths').innerHTML = '<h4>Paths</h4>' + n.rows.map(([st, a, b], i) => `<div class="pathrow"><div class="st ${ran ? (st === 'ok' ? 'ok' : st === 'no' ? 'no' : '') : ''}" id="pst${i}">${ran ? (st === 'ok' ? '✓' : st === 'no' ? '✕' : '–') : i + 1}</div><div>${a}<small>${ran ? b : 'Not tested yet'}</small></div><div></div></div>`).join('');
+  $('#netVerdict').style.display = ran ? '' : 'none'; $('#netVerdict').innerHTML = n.verdict;
+}
+function runNet(){
+  renderNet(false); const n = NETS[netS]; let i = 0;
+  $('#netRun').disabled = true;
+  const step = () => {
+    if (i > 0) { const [st, a, b] = n.rows[i - 1]; const el = $('#pst' + (i - 1)); el.className = 'st ' + (st === 'ok' ? 'ok' : st === 'no' ? 'no' : ''); el.textContent = st === 'ok' ? '✓' : st === 'no' ? '✕' : '–'; el.parentElement.querySelector('small').textContent = b; }
+    if (i < n.rows.length) { const el = $('#pst' + i); el.innerHTML = '<span class="spin" style="width:14px;height:14px;border-color:var(--border);border-top-color:var(--accent)"></span>'; i++; setTimeout(step, 550); }
+    else { $('#netVerdict').style.display = ''; $('#netRun').disabled = false; }
+  };
+  step();
+}
+
+/* ---------- settings ---------- */
+const PRESETS = { mac: [1.0, 1.55], lin: [1.0, 1.0], fast: [1.6, 1.85] };
+function drawCurve(){
+  const pts = []; for (let i = 0; i <= 60; i++) { const v = i / 60 * 2.5; pts.push([i / 60 * 290 + 5, 150 - Math.min(140, accel(v) * 22)]); }
+  $('#curve').innerHTML = `<rect x="5" y="10" width="${290 * 0.12}" height="140" fill="var(--tide-soft)"/><text x="9" y="24" font-size="9" fill="var(--muted)">precision</text>
+    <line x1="5" y1="150" x2="295" y2="150" stroke="var(--border)"/><line x1="5" y1="10" x2="5" y2="150" stroke="var(--border)"/>
+    <text x="290" y="145" font-size="10" text-anchor="end" fill="var(--muted)">finger speed →</text><text x="10" y="40" font-size="10" fill="var(--muted)" transform="rotate(-90 10 40)" text-anchor="end">gain</text>
+    <polyline points="${pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"/>`;
+  $('#gainV').textContent = S.gain.toFixed(2) + '×'; $('#gammaV').textContent = S.gamma.toFixed(2);
+  $('#gain').value = S.gain; $('#gamma').value = S.gamma;
+  $$('#presets button').forEach(b => b.classList.toggle('on', b.dataset.p === S.preset));
+}
+const TOGGLES = [['tapClick','Tap to click','One-finger tap clicks'],['natural','Natural scrolling','Content follows your fingers'],['sticky','Sticky modifiers','Tap ⌘ to latch it; double-tap to lock'],['popups','Key popups','Off for a MacBook-exact feel'],['haptics','Haptics','Key-down tick, click, drag-lock'],
+  ['clip','Clipboard sync','Off by default. Never syncs password-manager items'],['touchId','Unlock with Touch ID','Required at launch and after 5 min in background'],['hud','Debug HUD','Path, RTT, fps, bitrate, codec, drops'],['lockLayout','Lock layout across postures','Keep the Mac’s display size when you unfold']];
+function renderToggles(){
+  $('#toggles').innerHTML = TOGGLES.map(([k, a, b]) => `<div class="it"><div>${a}<small>${b}</small></div><button class="sw ${S[k] ? 'on' : ''}" data-t="${k}" aria-pressed="${!!S[k]}" aria-label="${a}"></button></div>`).join('');
+  $$('#toggles .sw').forEach(b => b.onclick = () => { const k = b.dataset.t; S[k] = !S[k]; if (k === 'hud') applyHud(); if (k === 'clip') applyClip(); renderToggles(); });
+}
+
+/* ---------- mac menu ---------- */
+let mmPaused = false, mmRevoke = null, mmRevoked = {};
+function renderMenu(){
+  const devs = [['iPhone Duo', mmPaused ? 'paused' : 'connected · WSS 38 ms', 'duo'], ['iPhone (old)', 'last seen 3 days ago', 'old']].filter(d => !mmRevoked[d[2]]);
+  $('#mmMenu').innerHTML = `
+    <div class="stat"><span class="dot ${mmPaused ? 'warn' : ''}"></span><div><b>${mmPaused ? 'Remote access paused' : 'In use · iPhone Duo'}</b><br><small>${mmPaused ? 'Ports closed; nobody can connect' : 'Work Wi-Fi · WSS 443 · 38 ms · curtain on'}</small></div></div>
+    <div class="sep"></div>
+    <div class="mi h">Pair new iPhone…<small>needs admin</small></div>
+    <div class="sep"></div>
+    <div style="padding:4px 10px"><small>DEVICES</small></div>
+    ${devs.map(([n, s, id]) => `<div class="dev"><span>▯</span><div>${n}<br><small>${s}</small></div><button class="x" data-rv="${id}">Revoke</button></div>`).join('')}
+    ${mmRevoke ? `<div style="margin:6px 8px;padding:10px;border-radius:10px;background:var(--surface2);border:1px solid var(--border)"><b>Revoke ${mmRevoke === 'duo' ? 'iPhone Duo' : 'iPhone (old)'}?</b><br><small>It is disconnected now and must re-pair at home.</small><div style="display:flex;gap:6px;margin-top:8px"><button class="chip" data-rc="no">Cancel</button><button class="chip" style="border-color:var(--danger);color:var(--danger)" data-rc="yes">Revoke</button></div></div>` : ''}
+    <div class="sep"></div>
+    <div class="mi h" data-mm="disc">Disconnect all</div>
+    <div class="mi h" data-mm="pause">${mmPaused ? 'Resume remote access' : 'Pause remote access'}</div>
+    <div class="mi h" data-mm="curtain">Show curtain preview<small>⌃⌥⌘C</small></div>
+    <div class="sep"></div>
+    <div class="mi h">Address: 41.●●.●●.17<small>3 changes in 30 d ›</small></div>
+    <div class="mi h">Screen Recording permission<small>renews in 24 d</small></div>
+    <div class="sep"></div>
+    <div class="mi h">Settings…<small>⌘,</small></div>
+    <div class="mi h">Quit Clamshell<small>⌘Q</small></div>`;
+  $$('[data-rv]').forEach(b => b.onclick = () => { mmRevoke = b.dataset.rv; renderMenu(); });
+  $$('[data-rc]').forEach(b => b.onclick = () => { if (b.dataset.rc === 'yes') mmRevoked[mmRevoke] = true; mmRevoke = null; renderMenu(); });
+  $$('[data-mm]').forEach(b => b.onclick = () => {
+    const a = b.dataset.mm;
+    if (a === 'pause') { mmPaused = !mmPaused; renderMenu(); }
+    if (a === 'curtain') $('#mmCurtain').classList.add('on');
+    if (a === 'disc') { const n = $('#mmNotif'); n.querySelector('b').textContent = 'All sessions disconnected'; n.classList.add('on'); setTimeout(() => n.classList.remove('on'), 2200); }
+  });
+}
+
+/* ---------- global: HUD, banners, network ---------- */
+const NETINFO = {
+  work: { label: 'WSS · 38 ms', path: 'WSS·443  proxy✓  TLS-inspected✓', rtt: 38, br: [5.8, 8.0], cls: '' },
+  home: { label: 'LAN · 3 ms', path: 'LAN-UDP  bonjour  FEC off', rtt: 3, br: [14.2, 30], cls: '' },
+  cell: { label: 'UDP · 58 ms', path: 'Direct-UDP :48213  FEC 15%', rtt: 58, br: [6.1, 8.0], cls: 'warn' },
+};
+function applyNet(){
+  const n = NETINFO[S.net];
+  $$('[data-netlabel]').forEach(el => { el.textContent = el.closest('#glance') ? 'Reachable · ' + n.label : n.label; });
+  $$('[data-netdot]').forEach(el => el.className = 'dot ' + n.cls);
+}
+function hudText(){
+  const n = NETINFO[S.net], j = () => (Math.random() - .5);
+  const rtt = Math.max(1, Math.round(n.rtt + j() * n.rtt * 0.2));
+  const fps = S.net === 'home' ? 120 : 120 - Math.round(Math.random() * 3);
+  const br = (n.br[0] + j() * 0.8).toFixed(1);
+  const g2g = Math.round(28 + rtt / 2 + j() * 4);
+  return `<span class="g">${n.path}</span>\nRTT ${rtt} ms (p95 ${Math.round(rtt * 1.5)})  loss ${S.net === 'cell' ? '0.4' : '0.0'} %\n${fps}/${fps - 1}/${fps - 1} fps   ${br} / ${n.br[1].toFixed(1)} Mbps\nHEVC 4:4:4 · 1:1 · refined <span class="g">●</span>\ndrop net 0 · late ${Math.round(Math.random() * 2)} · dec 0\nenc 5.1 ms · dec 3.4 ms · <span class="${g2g > 50 ? 'w' : 'g'}">g2g ≈ ${g2g} ms</span>\nthermal nominal · 2.1 W`;
+}
+function applyHud(){
+  $('#hudBtn').classList.toggle('on', S.hud);
+  $$('[data-act="hud"]').forEach(b => b.classList.toggle('on', S.hud));
+  MACS.forEach(m => { const h = $('.hud', m.el); h.classList.toggle('on', S.hud); if (S.hud) h.innerHTML = hudText(); });
+}
+function applyClip(){ $$('[data-act="clip"]').forEach(b => b.classList.toggle('on', S.clip)); const t = $$('#coverTiles .tile')[4]; if (t) t.setAttribute('aria-disabled', String(!S.clip)); }
+const BANNERS = {
+  connecting: '<span class="spin"></span> Connecting… trying home Wi-Fi, direct, HTTPS',
+  reconnecting: '<span class="spin"></span> Network changed, reconnecting',
+  switched: '<span style="color:#5FD3C3">●</span> Now on direct UDP · 41 ms',
+  paused: '⏸︎ Someone is using your Mac <button>Wait</button><button class="p">Disconnect</button>',
+  ip: '⚠︎ Your Mac’s address may have changed <button>Enter IP</button><button class="p">Scan at home</button>',
+  incompat: '⬆︎ Update Clamshell on your Mac (needs protocol 2.x, Mac has 1.4)',
+  perm: '⏳ Mac’s Screen Recording permission renews in 3 days',
+};
+function applyBanner(){
+  MACS.forEach(m => {
+    const b = $('.banner', m.el); const on = S.banner !== 'none';
+    b.innerHTML = on ? BANNERS[S.banner] : ''; b.classList.toggle('on', on);
+    $('.dim', m.el).classList.toggle('on', S.banner === 'reconnecting' || S.banner === 'paused');
+  });
+}
+
+/* ---------- views, scaling ---------- */
+let scale = 1;
+function fit(){
+  const v = $('.view.on'); if (!v) return;
+  const W = +v.dataset.w, H = +v.dataset.h, st = $('#stage');
+  document.documentElement.style.setProperty('--hh', $('#hdr').offsetHeight + 'px');
+  const z = $('#zoom').value;
+  scale = z === 'fit' ? Math.min((st.clientWidth - 32) / W, (st.clientHeight - 24) / H, 1) : +z;
+  const sc = $('#scaler'); sc.style.transform = `translateX(-50%) scale(${scale})`;
+  sc.style.width = W + 'px'; sc.style.height = H + 'px';
+  if (z !== 'fit') { sc.style.left = Math.max(W * scale / 2 + 16, st.clientWidth / 2) + 'px'; } else sc.style.left = '50%';
+  st.scrollTop = 0;
+  // make the stage scrollable when zoomed
+  let spacer = $('#spacer'); if (!spacer) { spacer = document.createElement('div'); spacer.id = 'spacer'; spacer.style.cssText = 'position:absolute;left:0;top:0;width:1px;pointer-events:none'; st.appendChild(spacer); }
+  spacer.style.height = (H * scale + 40) + 'px'; spacer.style.width = (W * scale + 32) + 'px';
+}
+function showView(id){
+  S.view = id; store.set('view', id);
+  $$('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + id));
+  $$('.tab').forEach(t => t.classList.toggle('on', t.dataset.v === id));
+  const info = VIEWS.find(v => v[0] === id); $('#caption').innerHTML = info ? '<span>' + info[3] + ' <i style="opacity:.6">(click to hide)</i></span>' : '';
+  activeMac = id === 'laptop' ? laptopMac : id === 'flat' ? flatMac : id === 'book' ? bookMac : id === 'cover' ? coverMac : null;
+  if (id === 'pair') renderPair();
+  if (id === 'settings') drawCurve();
+  fit();
+}
+
+function init(){
+  $('#tabs').innerHTML = VIEWS.map(([id, name, ic]) => `<button class="tab" data-v="${id}"><span aria-hidden="true">${ic}</span>${name}</button>`).join('');
+  $$('.tab').forEach(t => t.onclick = () => showView(t.dataset.v));
+  const top = $('#laptopTop'); top.style.width = '939px'; top.style.height = '667px';
+  laptopMac = buildMac(top, 'code');
+  $$('#deckSeg button').forEach(b => b.onclick = () => setDeckMode(b.dataset.mode));
+  renderDeck(); setupFlat(); setupBook(); setupCover(); renderNet(false); renderToggles(); renderMenu();
+  // seam actions
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    const a = b.dataset.act;
+    if (a === 'hud') { S.hud = !S.hud; applyHud(); renderToggles(); }
+    if (a === 'legend') { S.legend = !S.legend; b.classList.toggle('on', S.legend); const l = $('#deckBody .legend'); if (l) l.classList.toggle('on', S.legend); }
+    if (a === 'clip') { S.clip = !S.clip; applyClip(); renderToggles(); activeMac = laptopMac; toast('clipboard sync ' + (S.clip ? 'on (this session)' : 'off')); }
+    if (a === 'more') { activeMac = curMac(); toast('⋯  Disconnect · Pin posture · Settings · Network check'); }
+  });
+  $('#hudBtn').onclick = () => { S.hud = !S.hud; applyHud(); renderToggles(); };
+  $('#net').onchange = e => { S.net = e.target.value; applyNet(); applyHud(); };
+  $('#banner').onchange = e => { S.banner = e.target.value; applyBanner(); };
+  const th = store.get('theme', 'auto'); $('#theme').value = th; applyTheme(th);
+  $('#theme').onchange = e => { applyTheme(e.target.value); store.set('theme', e.target.value); };
+  $('#zoom').onchange = fit;
+  $('#caption').onclick = () => $('#caption').classList.toggle('min');
+  if (window.innerWidth < 1000) $('#caption').classList.add('min');
+  $$('#netScenario button').forEach(b => b.onclick = () => { netS = b.dataset.s; $$('#netScenario button').forEach(x => x.classList.toggle('on', x === b)); renderNet(false); });
+  $('#netRun').onclick = runNet;
+  $('#netCopy').onclick = async () => {
+    const n = NETS[netS]; const txt = 'Clamshell network check (' + netS + ')\n' + n.rows.map(r => (r[0] === 'ok' ? '[ok] ' : r[0] === 'no' ? '[x]  ' : '[-]  ') + r[1] + ': ' + r[2]).join('\n');
+    try { await navigator.clipboard.writeText(txt); phToast('netToast', 'Report copied'); } catch (e) { phToast('netToast', 'Copy not allowed here (mockup)'); }
+  };
+  $$('#presets button').forEach(b => b.onclick = () => { S.preset = b.dataset.p; [S.gain, S.gamma] = PRESETS[S.preset]; drawCurve(); });
+  $('#gain').oninput = e => { S.gain = +e.target.value; S.preset = ''; drawCurve(); };
+  $('#gamma').oninput = e => { S.gamma = +e.target.value; S.preset = ''; drawCurve(); };
+  $('#mmIcon').onclick = () => { const m = $('#mmMenu'); m.style.display = m.style.display === 'none' ? '' : 'none'; };
+  $('#mmCurtain').onclick = () => $('#mmCurtain').classList.remove('on');
+  setTimeout(() => $('#mmNotif').classList.add('on'), 600); setTimeout(() => $('#mmNotif').classList.remove('on'), 5000);
+  setInterval(() => { if (S.hud) MACS.forEach(m => { $('.hud', m.el).innerHTML = hudText(); }); }, 250);
+  // physical keyboard → deck (for convenience while reviewing)
+  window.addEventListener('keydown', e => {
+    if (!['laptop', 'flat', 'book'].includes(S.view) || e.target.closest('input,select')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    activeMac = S.view === 'laptop' ? laptopMac : S.view === 'flat' ? flatMac : bookMac;
+    if (e.key.length === 1) { type(e.key); e.preventDefault(); } else if (e.key === 'Backspace') { S.typed = S.typed.slice(0, -1); renderTyped(); e.preventDefault(); } else if (e.key === 'Enter') { type('\n'); e.preventDefault(); }
+  });
+  applyNet(); applyClip(); drawCurve();
+  showView(VIEWS.some(v => v[0] === S.view) ? S.view : 'laptop');
+  window.addEventListener('resize', fit);
+}
+function applyTheme(t){ if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t); }
+init();
+})();
+</script>
+</body>
+</html>

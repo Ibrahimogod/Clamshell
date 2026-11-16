@@ -1,0 +1,47 @@
+# xcodegen spec for the Mac host (menu-bar app). Generate with `xcodegen generate` in this folder.
+# Developer ID–signed, notarized, NOT sandboxed (needs CGVirtualDisplay, ScreenCaptureKit, later CGEvent).
+name: ClamshellHost
+options:
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+packages:
+  ClamshellKit:
+    path: ../shared
+targets:
+  ClamshellHost:
+    type: application
+    platform: macOS
+    sources: [Sources]
+    dependencies:
+      - package: ClamshellKit
+        products: [ClamshellWire, ClamshellSession, ClamshellTransport, ClamshellStream, ClamshellVideo,
+                   ClamshellRateControl, ClamshellVirtualDisplay, ClamshellKeychain, ClamshellBench, ClamshellInput]
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: Clamshell Host
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true
+        LSMinimumSystemVersion: "26.0"
+        NSLocalNetworkUsageDescription: Clamshell Host listens on your local network so your phone can connect to this Mac.
+        NSBonjourServices: [_clamshell._udp]
+    entitlements:
+      path: Generated/ClamshellHost.entitlements
+      properties: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).host
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 2
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: NO
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+        GENERATE_INFOPLIST_FILE: NO

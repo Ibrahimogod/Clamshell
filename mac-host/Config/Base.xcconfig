@@ -1,0 +1,5 @@
+// Shared settings. Personal values (team ID, bundle prefix) live in Local.xcconfig, which is gitignored.
+// Copy Local.xcconfig.example to Local.xcconfig and fill it in (docs/SETUP.md §2).
+CLAMSHELL_BUNDLE_PREFIX = dev.clamshell.local
+DEVELOPMENT_TEAM =
+#include? "Local.xcconfig"

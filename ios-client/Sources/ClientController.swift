@@ -1,0 +1,782 @@
+import ClamshellBench
+import ClamshellKeychain
+import ClamshellInput
+import LocalAuthentication
+import ClamshellSession
+import ClamshellStream
+import ClamshellTransport
+import ClamshellWire
+import CryptoKit
+import Darwin
+import Foundation
+import Observation
+import UIKit
+
+/// The phone's single clock for latency maths: `CLOCK_UPTIME_RAW` ns, the same base as
+/// `CACurrentMediaTime()` and `CADisplayLink` timestamps.
+enum PhoneClock {
+    static func nowNs() -> UInt64 { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
+    static func ns(fromMediaTime t: CFTimeInterval) -> UInt64 { UInt64(max(t, 0) * 1e9) }
+}
+
+@MainActor
+@Observable
+final class HUDModel {
+    var presentedFps = 0.0
+    var decodedFps = 0.0
+    var mbps = 0.0
+    var decodeMs = 0.0
+    var encodeMs = 0.0
+    var keyframes = 0
+    var refinements = 0
+    var framesLost = 0
+    var hostDrops = 0
+    var hostSkipped = 0
+    var chroma = "4:2:0"
+    var latencyP50: Double?
+    var latencyP95: Double?
+    var latencySamples = 0
+
+    /// Glass-to-glass from the camera test, or nil when it's off.
+    var glassText: String?
+    /// From the Mac's `HostState`: what its own screen is doing, and the rate controller's choice.
+    var macScreen: MacScreenState = .active
+    var macLocalUser = false
+    var macKeepsAwake = false
+    var rateText = ""
+    var rttMs: Double?
+    var migrations = 0
+    /// The path carrying the session: "lan", "udp" or "tcp" (WSS on 443).
+    var pathName = ""
+    /// Whether the Mac may post keyboard and mouse events (nil: a Mac without input, or not reported yet).
+    var inputAllowed: Bool?
+
+    /// A banner over the stream when the Mac's screen isn't what the user expects to see.
+    var macBanner: String? {
+        switch macScreen {
+        case _ where macLocalUser: "Someone is using the Mac. Your input is paused until they stop."
+        case .locked: "The Mac is locked. Unlock it at the Mac to continue."
+        case .screenSaver: macKeepsAwake ? "The Mac's screen saver is running." : "The Mac's screen saver is running (move the mouse at the Mac)."
+        default:
+            inputAllowed == false ? "Allow keyboard & mouse on the Mac: menu bar › Clamshell Host › Allow keyboard & mouse control." : nil
+        }
+    }
+
+    var latencyText: String {
+        guard let p50 = latencyP50, let p95 = latencyP95 else { return "barcode latency: waiting for patch + clock sync" }
+        return String(format: "barcode draw→present p50 %.1f · p95 %.1f ms (n %d)", p50, p95, latencySamples)
+    }
+}
+
+/// M1 client: Bonjour discovery, dev-code pairing, one Noise session, the video pipeline and the HUD.
+@MainActor
+@Observable
+final class ClientController {
+    enum Phase: Equatable { case idle, connecting(String), streaming(String), failed(String) }
+
+    private(set) var phase: Phase = .idle
+    private(set) var hosts: [BonjourBrowser.Found] = []
+    /// The Mac this phone paired with (ADR-0014), from the Keychain.
+    private(set) var pairedMac: PairedMac?
+    var isPaired: Bool { pairedMac != nil }
+    enum PairingStatus: Equatable { case idle, working, sas(String), failed(String) }
+    private(set) var pairingStatus: PairingStatus = .idle
+    /// Ask for Touch ID before connecting (ADR-0014; default on, skipped where the phone has no biometrics).
+    /// The Mac's sound on this phone (M5). Off at connect means the Mac doesn't capture audio at all.
+    var sound = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(sound, forKey: "sound"); audio?.muted = !sound }
+    }
+    private var audio: AudioPlayer?
+    var requireBiometrics = UserDefaults.standard.object(forKey: "requireBiometrics") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(requireBiometrics, forKey: "requireBiometrics") }
+    }
+    private var unlockedAt: Date?
+    /// `host:port` (or `[v6]:port`) for a Mac that Bonjour can't see: a remote network, or the netsim relay.
+    var manualAddress = UserDefaults.standard.string(forKey: "manualAddress") ?? "" {
+        didSet { UserDefaults.standard.set(manualAddress, forKey: "manualAddress") }
+    }
+    var manualAddressValid: Bool { Self.parse(manualAddress) != nil }
+    /// The Mac's TCP fallback port (TLS + WebSocket, path P3); 0 turns the fallback off.
+    var tcpPort = UserDefaults.standard.object(forKey: "tcpPort") as? Int ?? 443 {
+        didSet { UserDefaults.standard.set(tcpPort, forKey: "tcpPort") }
+    }
+    var showHUD = false
+    let hud = HUDModel()
+    private(set) var pipeline: ClientVideoPipeline?
+    /// Keyboard, trackpad and cursor, while streaming to a Mac that takes input.
+    private(set) var input: InputClient?
+    /// A hardware keyboard or mouse attached to the phone, forwarded while streaming (M4).
+    private(set) var hardware: HardwareInput?
+    /// How the Duo is held (ADR-0012), and the per-posture choices.
+    let posture = PostureModel()
+    var deckMode = DeckMode(rawValue: UserDefaults.standard.string(forKey: "deckMode") ?? "") ?? .deck {
+        didSet { UserDefaults.standard.set(deckMode.rawValue, forKey: "deckMode") }
+    }
+    /// Flat and book: a touch on the picture is a click there (true), or the picture is a trackpad (false).
+    var directTouch = UserDefaults.standard.object(forKey: "directTouch") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(directTouch, forKey: "directTouch") }
+    }
+    /// The Mac's display mode now (it follows the posture on a 1.4 Mac).
+    private(set) var displayMode = DisplayMode.laptop
+    private var macMinor: UInt16 = 0
+    private(set) var macCaps: Capabilities = []
+    private var sendingFile: String?
+    /// Mac → phone clipboard: writes the phone's pasteboard when the Mac's changes (off by default).
+    var clipboardSync = UserDefaults.standard.bool(forKey: "clipboardSync") {
+        didSet { UserDefaults.standard.set(clipboardSync, forKey: "clipboardSync") }
+    }
+    private(set) var lastClipboardNote: String?
+    private var bulkOut = BulkSender()
+    private var bulkIn = BulkReceiver()
+    private var clipboardCount: UInt64 = 0
+
+    /// Presentation-side counters, written by the renderer on the main actor.
+    var presentedFrames = 0
+    private(set) var latency = LatencyStats(capacity: 2000)
+    private(set) var clock = ClockSync()
+
+    private let keychain = KeychainStore(service: "dev.clamshell.client")
+    private var browser: BonjourBrowser?
+    private var connection: ClientSessionConnection?
+    private var udp: PathRacer?
+    private var tasks: [Task<Void, Never>] = []
+    private var lastStats: (at: ContinuousClock.Instant, decoded: Int, bytes: Int, presented: Int)?
+    private var pingId: UInt32 = 0
+
+    /// Harness B on one device: the rear camera watches the Mac's flash square (FlashProbe.swift).
+    var cameraTestEnabled = false
+    private var cameraProbe: CameraFlashProbe?
+    private var cameraStatus = ""
+    private var cameraFps = 0.0
+    private var screenFlash = FlashEdgeDetector(fixedThreshold: 128, interpolates: false)
+    private var flashMatcher = FlashMatcher()
+    private var hudTicks = 0
+    var flashTestRunning: Bool { cameraProbe != nil }
+
+    /// The Simulator has no hardware HEVC decoder; a real phone must never fall back to software.
+    #if targetEnvironment(simulator)
+    static let requireHardwareDecode = false
+    #else
+    static let requireHardwareDecode = true
+    #endif
+
+    /// Launch arguments for runs started from the Mac (`xcrun devicectl device process launch …`):
+    /// `--camera-test` turns the glass-to-glass camera test on, `--auto-connect` connects to the first Mac found.
+    private let autoConnect = CommandLine.arguments.contains("--auto-connect")
+    /// `--host <host:port>` connects there instead of to a Bonjour result (with `--auto-connect`).
+    private let launchHost: String? = {
+        let a = CommandLine.arguments
+        guard let i = a.firstIndex(of: "--host"), i + 1 < a.count else { return nil }
+        return a[i + 1]
+    }()
+
+    init() {
+        if let h = launchHost { manualAddress = h }
+        if CommandLine.arguments.contains("--camera-test") { cameraTestEnabled = true }
+        if let d = try? keychain.data("paired-mac") { pairedMac = try? JSONDecoder().decode(PairedMac.self, from: d) }
+        try? keychain.delete("dev-code")                       // M1 development pairing is gone
+        posture.onDisplayChange = { [weak self] p in self?.displayPostureChanged(p) }
+        // `--posture flat|book|laptop|cover` pins a posture at launch (simulator tests have no hinge).
+        if let i = CommandLine.arguments.firstIndex(of: "--posture"), i + 1 < CommandLine.arguments.count {
+            posture.pinned = Posture(rawValue: CommandLine.arguments[i + 1])
+        }
+    }
+
+    // MARK: pairing (ADR-0014)
+
+    /// Pairs with the Mac that shows `text` (QR string or the 16-character code). With only the code, the
+    /// Mac is the one Bonjour finds, or the address field.
+    func pair(code text: String) {
+        guard let invite = PairingInvite(string: text) else {
+            pairingStatus = .failed("That isn't a pairing code. Open Clamshell Host › Pair new iPhone… on the Mac.")
+            return
+        }
+        var targets: [(String, UInt16)] = invite.addresses.map { ($0, invite.port) }
+        if targets.isEmpty, let found = hosts.first, case .hostPort(let h, let p) = found.endpoint { targets.append(("\(h)", p.rawValue)) }
+        let bonjour = targets.isEmpty ? hosts.first?.endpoint : nil
+        if targets.isEmpty, bonjour == nil, let (h, p) = Self.parse(manualAddress) { targets.append((h, p)) }
+        guard !targets.isEmpty || bonjour != nil else {
+            pairingStatus = .failed("No Mac found on this Wi-Fi. Pair at home, on the same network as the Mac.")
+            return
+        }
+        pairingStatus = .working
+        Task {
+            do {
+                let identity = try identity()
+                let name = UIDevice.current.name
+                // The Mac's first listed LAN address (or the Bonjour result when only the code was typed).
+                let path: any PacketPath = if let bonjour { UDPClient(endpoint: bonjour, name: "pair") }
+                    else { UDPClient(host: targets[0].0, port: targets[0].1, name: "pair") }
+                let (mac, endpoint) = try await PairingClient.pair(path: path, identity: identity, invite: invite, phoneName: name) { sas in
+                    Task { @MainActor [weak self] in self?.pairingStatus = .sas(sas) }
+                }
+                let record = PairedMac(publicKey: Data(mac.publicKey), psk: Data(mac.psk), name: mac.name, udpPort: endpoint.udpPort,
+                                       tcpPort: endpoint.tcpPort, publicHost: endpoint.publicHost, paired: .now)
+                try keychain.set(try JSONEncoder().encode(record), for: "paired-mac")
+                pairedMac = record
+                if !endpoint.publicHost.isEmpty {
+                    let h = endpoint.publicHost.contains(":") ? "[\(endpoint.publicHost)]" : endpoint.publicHost
+                    manualAddress = "\(h):\(endpoint.udpPort)"
+                }
+                if endpoint.tcpPort > 0 { tcpPort = Int(endpoint.tcpPort) }
+                pairingStatus = .idle
+                print("paired with \(mac.name)")
+                if CommandLine.arguments.contains("--network-check") { runNetworkCheck() }
+                if autoConnect, phase == .idle {
+                    if launchHost != nil { connectManual() } else if let first = hosts.first { connect(to: first) }
+                }
+            } catch PairingClient.Failure.rejected {
+                pairingStatus = .failed("The Mac said the digits didn't match. Try again.")
+            } catch PairingClient.Failure.timedOut {
+                pairingStatus = .failed("The Mac didn't answer. Is its pairing window still open, and is this phone on the same Wi-Fi?")
+            } catch PairingClient.Failure.wrongMac {
+                pairingStatus = .failed("A different Mac answered than the one that showed the code. Not paired.")
+            } catch {
+                pairingStatus = .failed("Pairing failed: \(error)")
+            }
+        }
+    }
+
+    func cancelPairingMessage() { pairingStatus = .idle }
+
+    /// The Mac's away-from-home address (ADR-0005), newest `seq` wins. Fills the address field when it's
+    /// empty or still holds the previous learned value; a hand-typed address is left alone.
+    private func learn(_ e: HomeEndpoint) {
+        guard var mac = pairedMac, !e.host.isEmpty, e.seq > mac.endpointSeq ?? 0 else { return }
+        let h = e.host.contains(":") ? "[\(e.host)]" : e.host
+        let old = mac.publicHost.isEmpty ? nil : (mac.publicHost.contains(":") ? "[\(mac.publicHost)]" : mac.publicHost) + ":\(mac.udpPort)"
+        if manualAddress.isEmpty || manualAddress == old { manualAddress = "\(h):\(e.udpPort)" }
+        mac.publicHost = e.host
+        mac.udpPort = e.udpPort
+        if e.tcpPort > 0 { mac.tcpPort = e.tcpPort; tcpPort = Int(e.tcpPort) }
+        mac.endpointSeq = e.seq
+        pairedMac = mac
+        try? keychain.set(try JSONEncoder().encode(mac), for: "paired-mac")
+        print("# home endpoint: \(e.host) udp \(e.udpPort) tcp \(e.tcpPort)")
+    }
+
+    // MARK: network check
+
+    struct PathCheck: Identifiable, Equatable {
+        let id: String
+        var detail: String
+        var ok: Bool?
+    }
+    private(set) var checks: [PathCheck] = []
+    private(set) var checking = false
+
+    /// Tries each path on its own (LAN, home UDP, TCP 443) with a real handshake; nothing streams.
+    func runNetworkCheck() {
+        guard let mac = pairedMac, !checking else { return }
+        checking = true
+        let peer = PeerConfig(publicKey: [UInt8](mac.publicKey), psk: [UInt8](mac.psk), name: mac.name)
+        var plan: [(String, String, @Sendable () -> any PacketPath)] = []
+        if let lan = hosts.first?.endpoint { plan.append(("Same Wi-Fi (LAN)", "Bonjour", { UDPClient(endpoint: lan, name: "lan") })) }
+        else { plan.append(("Same Wi-Fi (LAN)", "Mac not visible on this network", { DeadPath() })) }
+        if let (h, p) = Self.parse(manualAddress) {
+            plan.append(("Home, UDP \(p)", h, { UDPClient(host: h, port: p, name: "udp") }))
+            if let tp = UInt16(exactly: tcpPort), tp > 0 {
+                plan.append(("Home, TCP \(tp) (TLS)", h, { WSSClient(host: h, port: tp, name: "tcp") }))
+            }
+        } else {
+            plan.append(("Away from home", "no address yet: connect once at home, or type it below", { DeadPath() }))
+        }
+        checks = plan.map { PathCheck(id: $0.0, detail: $0.1 + " …", ok: nil) }
+        Task {
+            guard let identity = try? identity() else { checking = false; return }
+            for (name, detail, make) in plan {
+                let r = await PathProbe.check(make(), identity: identity, mac: peer,
+                                              hello: Hello(appVersion: "0.1.0", build: 1, capabilities: [], deviceName: "check"))
+                guard let i = checks.firstIndex(where: { $0.id == name }) else { continue }
+                switch r {
+                case .reachable(let ms): checks[i] = PathCheck(id: name, detail: "\(detail) · \(Int(ms.rounded())) ms", ok: true)
+                case .noAnswer: checks[i] = PathCheck(id: name, detail: "\(detail) · no answer", ok: false)
+                case .failed(let e): checks[i] = PathCheck(id: name, detail: "\(detail) · \(e)", ok: false)
+                }
+                print("# check: \(checks[i].id): \(checks[i].detail)")
+            }
+            checking = false
+        }
+    }
+
+    /// Forget the Mac. Pairing again needs the Mac's owner and the home Wi-Fi.
+    func forgetMac() {
+        try? keychain.delete("paired-mac")
+        pairedMac = nil
+    }
+
+    /// Touch ID before a session, at most every 5 minutes (skipped where there's no biometry).
+    private func unlock() async -> Bool {
+        guard requireBiometrics else { return true }
+        if let t = unlockedAt, Date().timeIntervalSince(t) < 300 { return true }
+        let ctx = LAContext()
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err) else { return true }
+        let ok = (try? await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Connect to your Mac")) ?? false
+        if ok { unlockedAt = Date() }
+        return ok
+    }
+
+    var hevc444Text: String {
+        switch DecodeProbe.cached444 {
+        case true?: "hardware, verified"
+        case false?: "not available (4:2:0 stream)"
+        case nil: "not probed yet"
+        }
+    }
+
+    func startBrowsing() {
+        guard browser == nil else { return }
+        if DecodeProbe.cached444 == nil { Task.detached { _ = DecodeProbe.run444Check() } }
+        let b = BonjourBrowser()
+        browser = b
+        b.start()
+        tasks.append(Task { [weak self] in
+            for await list in b.results {
+                guard let self else { return }
+                hosts = list.sorted { $0.name < $1.name }
+                if autoConnect, launchHost == nil, phase == .idle, isPaired, pairingStatus == .idle, let first = hosts.first { connect(to: first) }
+            }
+        })
+        if let invite = ProcessInfo.processInfo.environment["CLAMSHELL_PAIR_INVITE"], !isPaired || pairedMac.map({ PairingInvite(string: invite)?.macPublicKey != [UInt8]($0.publicKey) }) == true {
+            pair(code: invite)                                 // automation: pair first, then auto-connect
+        } else if autoConnect, launchHost != nil, phase == .idle { connectManual() }
+    }
+
+    /// Splits `host:port`, `[v6]:port`. Nil if malformed.
+    static func parse(_ text: String) -> (host: String, port: UInt16)? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        let host: Substring, port: Substring
+        if t.hasPrefix("["), let close = t.firstIndex(of: "]") {
+            host = t[t.index(after: t.startIndex)..<close]
+            let rest = t[t.index(after: close)...]
+            guard rest.hasPrefix(":") else { return nil }
+            port = rest.dropFirst()
+        } else {
+            guard let colon = t.lastIndex(of: ":"), t.firstIndex(of: ":") == colon else { return nil }
+            host = t[..<colon]
+            port = t[t.index(after: colon)...]
+        }
+        guard !host.isEmpty, let p = UInt16(port), p > 0 else { return nil }
+        return (String(host), p)
+    }
+
+    func connectManual() {
+        guard let (h, p) = Self.parse(manualAddress) else { return }
+        connect(to: BonjourBrowser.Found(name: manualAddress, endpoint: .hostPort(host: .init(h), port: .init(rawValue: p) ?? .any)))
+    }
+
+    func connect(to host: BonjourBrowser.Found) {
+        guard let mac = pairedMac else { return }
+        phase = .connecting(host.name)
+        Task {
+            guard await unlock() else { phase = .failed("Touch ID didn't match."); return }
+            await run(host: host, mac: mac)
+        }
+    }
+
+    func disconnect() {
+        cameraProbe?.stop()
+        cameraProbe = nil
+        hud.glassText = nil
+        tasks.forEach { $0.cancel() }
+        tasks.removeAll()
+        pipeline?.stop()
+        pipeline = nil
+        hardware?.stop()
+        hardware = nil
+        audio?.stop()
+        audio = nil
+        input?.stop()
+        input = nil
+        hud.inputAllowed = nil
+        if let c = connection { Task { await c.close() } }
+        connection = nil
+        udp = nil
+        hud.macScreen = .active
+        hud.rateText = ""
+        phase = .idle
+        browser?.stop()
+        browser = nil
+        startBrowsing()
+    }
+
+    func recordBarcode(macMicros: UInt32, presentNs: UInt64) {
+        guard let best = clock.best else { return }
+        // Mac "now" in its own clock ≈ phone now + offset; unwrap the 32-bit µs value near it.
+        let macNowNs = UInt64(bitPattern: Int64(bitPattern: presentNs) &+ best.offsetNs)
+        let macDrawNs = BarcodePatch.unwrapMicros(macMicros, near: macNowNs / 1000) * 1000
+        guard let drawLocal = clock.toLocal(remoteNs: macDrawNs), presentNs > drawLocal else { return }
+        let ms = Double(presentNs - drawLocal) / 1e6
+        if ms < 2000 { latency.add(ms) }
+    }
+
+    /// The streamed square's level in a picture presented at `presentNs` (renderer, main actor).
+    func recordStreamFlash(level: Double, presentNs: UInt64) {
+        if let e = screenFlash.add(timeNs: presentNs, level: level), let lag = flashMatcher.addFollower(e) { logLag(lag, e) }
+    }
+
+    /// One line per matched flip on the console, so a slow tail can be lined up against the host's own log.
+    private func logLag(_ lag: Double, _ e: FlashEdge) {
+        print("# flip \(e.rising ? "up" : "down") lag \(String(format: "%.1f", lag)) ms · \(Date().formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute().second()))")
+    }
+
+    private func startCameraTest() {
+        screenFlash = FlashEdgeDetector(fixedThreshold: 128, interpolates: false)
+        flashMatcher = FlashMatcher()
+        cameraStatus = "starting the camera"
+        let probe = CameraFlashProbe(
+            onEdge: { [weak self] e in
+                Task { @MainActor in
+                    guard let self, let lag = self.flashMatcher.addReference(e) else { return }
+                    self.logLag(lag, e)
+                }
+            },
+            onStatus: { [weak self] status, fps in Task { @MainActor in self?.cameraStatus = status; self?.cameraFps = fps } })
+        cameraProbe = probe
+        probe.start()
+    }
+
+    private func refreshGlassText() {
+        guard cameraProbe != nil else { hud.glassText = nil; return }
+        let lags = flashMatcher.lagsMs.sorted()
+        let fps = String(format: "cam %.0f fps", cameraFps)
+        let text: String
+        if lags.isEmpty {
+            text = "glass-to-glass (camera): \(cameraStatus) · \(fps)"
+        } else {
+            let p = { (q: Double) in lags[min(lags.count - 1, Int((q * Double(lags.count - 1)).rounded()))] }
+            text = String(format: "glass-to-glass (camera) p50 %.1f · p95 %.1f ms (n %d) · ", p(0.5), p(0.95), lags.count) + fps
+        }
+        hud.glassText = text
+        hudTicks += 1
+        if hudTicks % 4 == 0 {                                   // every 2 s, for `devicectl … --console`
+            print("# \(text) · capture→screen p50 \(hud.latencyP50.map { String(format: "%.1f", $0) } ?? "-") · decode \(String(format: "%.1f", hud.decodeMs)) ms")
+            fflush(stdout)
+        }
+    }
+
+    private func identity() throws -> StaticIdentity {
+        let raw = try keychain.dataOrCreate("identity") { Data(StaticIdentity().rawPrivateKey) }
+        return try StaticIdentity(rawPrivateKey: [UInt8](raw))
+    }
+
+    private func run(host: BonjourBrowser.Found, mac: PairedMac) async {
+        do {
+            var caps: Capabilities = [.hevc420Decode, .refinementFrames, .benchBarcode, .receiverReports, .fecXor,
+                                      .inputV1, .clientCursor, .clipboardV1]
+            if DecodeProbe.cached444 == true { caps.insert(.hevc444Decode) }
+            caps.insert(.audioOpus)                              // muting is local, so a later unmute plays at once
+            let wanted = PostureModel.mode(for: posture.display)
+            let modes = [wanted] + [DisplayMode.laptop, .flat, .book, .cover].filter { $0 != wanted }
+            let hello = Hello(appVersion: "0.1.0", build: 1, capabilities: caps, displayModes: modes, maxFps: 120,
+                              deviceName: UIDevice.current.name)
+            // Race the paths (ADR-0002): LAN (Bonjour), home UDP, then TLS + WebSocket on TCP, 150 ms apart.
+            var candidates: [PathRacer.Candidate] = []
+            let isManual = host.name == manualAddress
+            if !isManual {
+                let ep = host.endpoint
+                candidates.append(.init(rank: 0, delay: .zero) { UDPClient(endpoint: ep, name: "lan") })
+            }
+            if let (h, p) = Self.parse(manualAddress) {
+                let start: Duration = isManual ? .zero : .milliseconds(150)
+                candidates.append(.init(rank: 1, delay: start) { UDPClient(host: h, port: p, name: "udp") })
+                if let tp = UInt16(exactly: tcpPort), tp > 0 {
+                    candidates.append(.init(rank: 2, delay: start + .milliseconds(150)) { WSSClient(host: h, port: tp, name: "tcp") })
+                }
+            }
+            let udp = PathRacer(candidates)
+            self.udp = udp
+            let conn = ClientSessionConnection(udp: udp, identity: try identity(),
+                                               server: PeerConfig(publicKey: [UInt8](mac.publicKey), psk: [UInt8](mac.psk), name: mac.name), hello: hello)
+            connection = conn
+            // Reports only to a Mac that understands them (protocol 1.1); a 1.0 Mac would just drop them.
+            let macHello = try await conn.connect(timeout: .seconds(5))
+            macMinor = macHello.protoMinor
+            macCaps = macHello.capabilities
+            // A 1.3 Mac builds the first mode it understands and can't change it; 1.4 follows the posture.
+            displayMode = wanted
+            let reports = macHello.protoMinor >= 1 && macHello.capabilities.contains(.receiverReports)
+            var sendReport: (@Sendable (ReceiverReport) -> Void)?
+            if reports {
+                sendReport = { @Sendable (r: ReceiverReport) in
+                    let m = r.message
+                    Task { await conn.send([m]) }
+                }
+            }
+            let pipeline = ClientVideoPipeline(requireHardware: Self.requireHardwareDecode,
+                                               requestKeyframe: { req in Task { await conn.send([req.message]) } },
+                                               sendReport: sendReport)
+            self.pipeline = pipeline
+            latency = LatencyStats(capacity: 2000)
+            clock = ClockSync()
+            presentedFrames = 0
+            lastStats = nil
+            pipeline.start()
+            bulkOut = BulkSender()
+            bulkIn = BulkReceiver()
+            if macHello.capabilities.contains(.inputV1) {
+                let mode = displayMode
+                let ic = InputClient(connection: conn, displaySize: CGSize(width: Double(mode.widthPoints), height: Double(mode.heightPoints)))
+                input = ic
+                hardware = HardwareInput(input: ic)
+            }
+            if cameraTestEnabled { startCameraTest() }
+            phase = .streaming(host.name)
+            if macHello.capabilities.contains(.audioOpus) {
+                do { let a = try AudioPlayer(); a.muted = !sound; audio = a } catch { print("audio: \(error)") }
+            }
+            #if DEBUG
+            // `--posture-switch flat`: pin that posture 3 s into the stream (tests the display mode rebuild).
+            if let i = CommandLine.arguments.firstIndex(of: "--posture-switch"), i + 1 < CommandLine.arguments.count,
+               let p = Posture(rawValue: CommandLine.arguments[i + 1]) {
+                Task { try? await Task.sleep(for: .seconds(3)); posture.pinned = p }
+            }
+            // `--audio-stats`: print what the audio player did 5 s into the stream.
+            if CommandLine.arguments.contains("--audio-stats"), let a = audio {
+                Task.detached { try? await Task.sleep(for: .seconds(5)); let s = a.stats
+                    print("# audio: played \(s.played) lost \(s.lost) dropped \(s.dropped) queued \(Int(s.queuedMs)) ms") }
+            }
+            // `--send-file <path>`: send that file 2 s into the stream (tests the windowed bulk path).
+            if let i = CommandLine.arguments.firstIndex(of: "--send-file"), i + 1 < CommandLine.arguments.count {
+                let url = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+                Task { try? await Task.sleep(for: .seconds(2)); sendFile(url); print("# file: \(lastClipboardNote ?? "")") }
+            }
+            #endif
+            UIApplication.shared.isIdleTimerDisabled = true
+
+            let player = audio
+            tasks.append(Task.detached { [weak self] in
+                for await batch in conn.messages {
+                    pipeline.handle(batch)                       // video: thread-safe, stays off the main actor
+                    if let player {                              // audio: also off the main actor
+                        for m in batch where m.channel == .audio { if let p = try? AudioPacket(m) { player.handle(p) } }
+                    }
+                    let control = batch.filter { $0.channel != .video && $0.channel != .audio }
+                    if !control.isEmpty {
+                        let t4 = PhoneClock.nowNs()
+                        await self?.handleControl(control, t4: t4)
+                    }
+                }
+                await self?.connectionEnded("The Mac closed the connection.")
+            })
+            // Clock sync, and the Mac's rate control: 10 Hz pings while it reads our reports (their RTT above
+            // its minimum is the queuing delay we report; ~70 bytes each), else fast at first, then 1 Hz.
+            let fastPings = sendReport != nil
+            tasks.append(Task { [weak self] in
+                var n = 0
+                while !Task.isCancelled {
+                    await self?.sendPing(conn)
+                    n += 1
+                    try? await Task.sleep(for: fastPings || n < 10 ? .milliseconds(100) : .seconds(1))
+                }
+            })
+            tasks.append(Task { [weak self] in                   // bulk resends (cursor shapes, clipboard)
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(50))
+                    guard let self else { return }
+                    let resend = self.bulkOut.poll(nowNs: PhoneClock.nowNs())
+                    if !resend.isEmpty { await conn.send(resend) }
+                    if let name = self.sendingFile {
+                        if let p = self.bulkOut.progress { self.lastClipboardNote = "Sending \(name) · \(Int(p * 100))%" } else {
+                            self.lastClipboardNote = "Sent \(name) to the Mac's Downloads"
+                            self.sendingFile = nil
+                        }
+                    }
+                }
+            })
+            tasks.append(Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    self?.refreshHUD()
+                }
+            })
+        } catch let error as KeychainStore.KeychainError {
+            phase = .failed("This phone's key could not be read from the Keychain (\(error)). The app is probably not signed with a team; see docs/SETUP.md.")
+            connection = nil
+        } catch {
+            phase = .failed("Could not connect: \(error). Check the pairing code, and that the phone can reach the Mac: the same network, or the Mac's address and forwarded UDP port (docs/SETUP.md › Away from home).")
+            connection = nil
+        }
+    }
+
+    private func sendPing(_ conn: ClientSessionConnection) async {
+        pingId &+= 1
+        await conn.send([Ping(id: pingId, t1: PhoneClock.nowNs()).message])
+    }
+
+    private func handleControl(_ messages: [InnerMessage], t4: UInt64) {
+        for m in messages {
+            switch m.type {
+            case .pong:
+                // id 0 answers the transport's keepalive (another clock): it would corrupt clock sync and RTT.
+                if let p = try? Pong(m), p.id != Ping.keepaliveId, let sample = clock.add(t1: p.t1, t2: p.t2, t3: p.t3, t4: t4) {
+                    pipeline?.setRoundTrip(nanoseconds: sample.delayNs)
+                    hud.rttMs = Double(sample.delayNs) / 1e6
+                }
+            case .homeEndpoint:
+                if let e = try? HomeEndpoint(m) { learn(e) }
+            case .hostState:
+                if let h = try? HostState(m) {
+                    if h.screen != hud.macScreen { print("# mac screen: \(h.screen)") }
+                    hud.macScreen = h.screen
+                    hud.macKeepsAwake = h.keepsAwake
+                    hud.inputAllowed = h.inputAllowed
+                    if h.localUser != hud.macLocalUser { print("# mac local user: \(h.localUser)") }
+                    hud.macLocalUser = h.localUser
+                    hud.rateText = String(format: "target %.1f Mbit/s", Double(h.targetBitrateKbps) / 1000) + (h.fecPercent > 0 ? " · FEC \(h.fecPercent)%" : "")
+                }
+            case .hostStats:
+                if let s = try? HostStats(m) {
+                    hud.encodeMs = Double(s.encodeMicros) / 1000
+                    hud.hostDrops = Int(s.encoderDrops)
+                    hud.hostSkipped = Int(s.skippedWhileBusy)
+                }
+            case .cursorPosition:
+                if let p = try? CursorPosition(m) { input?.cursor.apply(p) }
+            case .bulkChunk:
+                guard let c = try? BulkChunk(m) else { continue }
+                let (ack, done) = bulkIn.add(c, nowNs: t4)
+                if let conn = connection { Task { await conn.send([ack.message]) } }
+                if let done { received(done) }
+            case .bulkAck:
+                if let a = try? BulkAck(m) { bulkOut.handle(a) }
+            case .cursorShape, .clipboardOffer, .keyboardLayout:
+                received(m)
+            case .goodbye:
+                connectionEnded("The Mac ended the session.")
+            default:
+                break
+            }
+        }
+    }
+
+    /// A message that came whole or through a bulk transfer.
+    private func received(_ m: InnerMessage) {
+        switch m.type {
+        case .cursorShape:
+            if let s = try? CursorShape(m) { input?.cursor.add(s) }
+        case .keyboardLayout:
+            guard let l = try? KeyboardLayout(m) else { return }
+            print("# mac keyboard: \(l.name) (\(l.language))")
+            input?.keyboardLayout = l
+        case .clipboardOffer:
+            guard clipboardSync, let offer = try? ClipboardOffer(m) else { return }
+            if let text = offer.text {
+                UIPasteboard.general.string = text
+                lastClipboardNote = "Copied from the Mac: \(text.prefix(40))"
+            } else if let png = offer.items.first(where: { $0.uti == "public.png" }), let image = UIImage(data: Data(png.data)) {
+                UIPasteboard.general.image = image
+                lastClipboardNote = "Copied an image from the Mac"
+            }
+            clipboardCount = UInt64(UIPasteboard.general.changeCount)
+        default:
+            break
+        }
+    }
+
+    /// Phone → Mac, only when asked (reading the pasteboard shows iOS's paste prompt).
+    func sendClipboard() {
+        guard let conn = connection else { return }
+        var items: [ClipboardItem] = []
+        if let text = UIPasteboard.general.string { items.append(ClipboardItem(uti: "public.utf8-plain-text", data: Array(text.utf8))) }
+        else if let image = UIPasteboard.general.image, let png = image.pngData() { items.append(ClipboardItem(uti: "public.png", data: [UInt8](png))) }
+        guard !items.isEmpty else { lastClipboardNote = "The phone's clipboard is empty"; return }
+        let offer = ClipboardOffer(items: items, changeCount: UInt64(UIPasteboard.general.changeCount))
+        let chunks = bulkOut.send(offer.message, nowNs: PhoneClock.nowNs())
+        lastClipboardNote = "Sent the clipboard to the Mac"
+        Task {
+            for group in stride(from: 0, to: chunks.count, by: 16) {
+                await conn.send(Array(chunks[group..<min(group + 16, chunks.count)]))
+                if chunks.count > 16 { try? await Task.sleep(for: .milliseconds(5)) }
+            }
+        }
+    }
+
+    /// Phone → Mac Downloads (M5), up to `FileOffer.maxBytes`. The Mac saves it only if its
+    /// "Accept files from the phone" toggle is on, under a sanitised, unused name.
+    func sendFile(_ url: URL) {
+        guard let conn = connection, macCaps.contains(.filesV1) else { lastClipboardNote = "This Mac doesn't take files"; return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { lastClipboardNote = "Couldn't read \(url.lastPathComponent)"; return }
+        guard data.count <= FileOffer.maxBytes else {
+            lastClipboardNote = "\(url.lastPathComponent) is over \(FileOffer.maxBytes >> 20) MB"
+            return
+        }
+        let offer = FileOffer(name: url.lastPathComponent, sha256: Array(SHA256.hash(data: data)), data: [UInt8](data))
+        let chunks = bulkOut.send(offer.message, nowNs: PhoneClock.nowNs())
+        guard !chunks.isEmpty else { lastClipboardNote = "Couldn't send \(url.lastPathComponent)"; return }
+        sendingFile = url.lastPathComponent
+        lastClipboardNote = "Sending \(url.lastPathComponent)…"
+        // The first window goes out now; the 50 ms bulk poll keeps it full and resends what isn't acked.
+        Task { await conn.send(chunks) }
+    }
+
+    /// The app leaves the foreground: let go of every key and button on the Mac.
+    func releaseInput() { input?.releaseAllHeld() }
+
+    /// The posture held 600 ms: ask a 1.4 Mac for the display mode that fits (ADR-0012).
+    func displayPostureChanged(_ p: Posture) {
+        let mode = PostureModel.mode(for: p)
+        guard case .streaming = phase, let conn = connection, macMinor >= 4, mode != displayMode else { return }
+        displayMode = mode
+        input?.cursor.displaySize = CGSize(width: Double(mode.widthPoints), height: Double(mode.heightPoints))
+        let m = DisplayModeRequest(mode: mode).message
+        Task { await conn.send([m]) }
+        print("# posture: \(p.rawValue) → \(mode.widthPoints)×\(mode.heightPoints)")
+    }
+
+    private func connectionEnded(_ reason: String) {
+        guard case .streaming = phase else { return }
+        disconnect()
+        phase = .failed(reason)
+    }
+
+    private func refreshHUD() {
+        guard let pipeline else { return }
+        let s = pipeline.currentStats
+        let now = ContinuousClock.now
+        if let last = lastStats {
+            let dt = Double((now - last.at).components.attoseconds) / 1e18 + Double((now - last.at).components.seconds)
+            if dt > 0 {
+                hud.decodedFps = Double(s.framesDecoded - last.decoded) / dt
+                hud.presentedFps = Double(presentedFrames - last.presented) / dt
+                hud.mbps = Double(s.bytesReceived - last.bytes) * 8 / dt / 1e6
+            }
+        }
+        lastStats = (now, s.framesDecoded, s.bytesReceived, presentedFrames)
+        hud.decodeMs = s.lastDecodeMs
+        hud.keyframes = s.keyframes
+        hud.refinements = s.refinements
+        hud.framesLost = s.framesLost
+        hud.chroma = switch s.chroma { case .yuv444: "4:4:4"; case .yuv422: "4:2:2"; default: "4:2:0" }
+        hud.latencyP50 = latency.p50
+        hud.latencyP95 = latency.p95
+        hud.latencySamples = latency.count
+        hud.migrations = udp?.switches ?? 0
+        hud.pathName = udp?.activeName ?? "…"
+        refreshGlassText()
+    }
+}
+
+/// What the phone keeps about its Mac (Keychain, `ThisDeviceOnly`).
+struct PairedMac: Codable, Equatable {
+    var publicKey: Data
+    var psk: Data
+    var name: String
+    var udpPort: UInt16
+    var tcpPort: UInt16
+    var publicHost: String
+    var paired: Date
+    var endpointSeq: UInt64?
+}
+
+/// A path that never comes up (for a check row with nothing to try).
+final class DeadPath: PacketPath {
+    let name = "none"
+    let datagrams = AsyncStream<[UInt8]> { $0.finish() }
+    func start() async throws { throw CancellationError() }
+    func send(_ packets: [[UInt8]]) {}
+    func stop() {}
+}

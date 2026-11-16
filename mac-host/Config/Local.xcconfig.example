@@ -1,0 +1,5 @@
+// Copy to Local.xcconfig (gitignored). Used by both mac-host and ios-client.
+// Your 10-character Team ID: developer.apple.com › Account › Membership details.
+DEVELOPMENT_TEAM = ABCDE12345
+// A reverse-DNS prefix you own; the apps become <prefix>.host and <prefix>.client.
+CLAMSHELL_BUNDLE_PREFIX = com.example.clamshell
