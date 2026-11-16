@@ -123,6 +123,8 @@ final class HostController {
         },
         onPanic: { [weak self] in Task { await self?.disconnectAll() } })
     private(set) var lastFileNote = ""
+    /// Phone input messages thrown away because someone was using the Mac (for the host log).
+    private var droppedInput = 0
     private var bulkOut = BulkSender()
     private var bulkIn = BulkReceiver()
     private var bulkTask: Task<Void, Never>?
@@ -290,7 +292,7 @@ final class HostController {
             }
             deviceStore = DeviceStore(keychain: ephemeral ? nil : keychain)
             devices = deviceStore.devices
-            let hello = Hello(appVersion: "0.1.0", build: 1, capabilities: [.refinementFrames, .benchBarcode, .receiverReports, .fecXor, .inputV1, .clientCursor, .clipboardV1, .filesV1, .audioOpus],
+            let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: [.refinementFrames, .benchBarcode, .receiverReports, .fecXor, .inputV1, .clientCursor, .clipboardV1, .filesV1, .audioOpus],
                               displayModes: [], maxFps: 120, deviceName: Host.current().localizedName ?? "Mac")
             let server = HostSessionServer(responder: HostResponder(identity: identity, peers: devices.map(\.peer)), hello: hello)
             self.server = server
@@ -380,7 +382,9 @@ final class HostController {
                              server: HostSessionServer) async {
             streamHello = hello
             presence.wakeDisplay()
-            let use444 = hello.capabilities.contains(.hevc444Decode)
+            // Away from home the Mac's upload is the bottleneck: a lighter stream (see StreamSession.Profile).
+            let remote = await isRemote(key, server: server)
+            let use444 = hello.capabilities.contains(.hevc444Decode) && !remote
             do {
                 streamingActivity = ProcessInfo.processInfo.beginActivity(
                     options: [.userInitiated, .latencyCritical], reason: "Streaming the screen to \(hello.deviceName)")
@@ -393,7 +397,7 @@ final class HostController {
                 let session = try await StreamSession(peerKey: key, mode: mode, use444: use444,
                                                       adaptive: hello.capabilities.contains(.receiverReports),
                                                       fec: hello.capabilities.contains(.fecXor), clientCursor: clientCursor,
-                                                      mirror: mirrorMainDisplay, continuing: continuing, server: server)
+                                                      mirror: mirrorMainDisplay, remote: remote, continuing: continuing, server: server)
                 self.session = session
                 if hello.capabilities.contains(.inputV1) { startInput(session, cursor: clientCursor, server: server) }
                 localGuard.start()
@@ -403,14 +407,14 @@ final class HostController {
                 await restartAudio()
                 status = .streaming(peer: hello.deviceName)
                 streamDescription = (session.mirroring ? "this Mac's screen, \(session.width)×\(session.height) px" : "\(mode.widthPoints)×\(mode.heightPoints) pt @\(mode.scale)×")
-                    + " \(mode.refreshHz) Hz · HEVC \(use444 ? "4:4:4" : "4:2:0")"
+                    + " \(session.fps) Hz · HEVC \(use444 ? "4:4:4" : "4:2:0")" + (remote ? " · internet" : "")
                 screenRecordingGranted = true
                 startStats()
                 updateBarcode()
                 await sendHostState()
                 await sendHomeEndpoint()
                 sendKeyboardLayout()
-                print("streaming to \(hello.deviceName): \(streamDescription)")
+                print("streaming to \(hello.deviceName): \(streamDescription) · \(await server.pathDescription(of: key) ?? "?")")
             } catch {
                 status = .failed("\(error)")
                 screenRecordingGranted = CGPreflightScreenCaptureAccess()
@@ -421,17 +425,24 @@ final class HostController {
 
     private func handleMessages(session: StreamSession, key: [UInt8], messages: [InnerMessage], server: HostSessionServer) async {
             let input = messages.filter { $0.channel == .input }
-            if !input.isEmpty, !localGuard.active { session.injector?.handle(input) }
+            if !input.isEmpty {
+                if localGuard.active { droppedInput += input.count } else { session.injector?.handle(input) }
+            }
             let t2 = HostClock.nowNs()
             var replies: [InnerMessage] = []
             for m in messages {
                 switch m.type {
                 case .keyframeRequest:
-                    session.pipeline.requestKeyframe(lastGoodFrameId: (try? KeyframeRequest(m))?.lastGoodFrameId)
+                    let req = try? KeyframeRequest(m)
+                    tally.request(req?.reason)
+                    session.pipeline.requestKeyframe(lastGoodFrameId: req?.lastGoodFrameId)
                 case .ping:
                     if let p = try? Ping(m) { replies.append(Pong(id: p.id, t1: p.t1, t2: t2, t3: HostClock.nowNs()).message) }
                 case .receiverReport:
-                    if let r = try? ReceiverReport(m), session.handle(r) { rateText = session.rateText }
+                    if let r = try? ReceiverReport(m) {
+                        tally.add(r)
+                        if session.handle(r) { rateText = session.rateText }
+                    }
                 case .bulkChunk:
                     guard let c = try? BulkChunk(m) else { continue }
                     let (ack, done) = bulkIn.add(c, nowNs: t2)
@@ -519,6 +530,8 @@ final class HostController {
     }
 
     private func startStats() {
+        lastLogged = nil          // a new session's counters start at zero
+        tally = PathTally()
         statsTask?.cancel()
         statsTask = Task { [weak self] in
             var n = 0
@@ -528,7 +541,15 @@ final class HostController {
                 n += 1
                 if s.checkReportsStale() { self.rateText = s.rateText }
                 if n % 4 == 0 { await self.sendHostState() }
+                // The phone moved between home Wi-Fi and the internet: rebuild the stream for the new path.
+                if n % 4 == 0, await server.isLocalPath(of: s.peerKey) != nil, await self.isRemote(s.peerKey, server: server) != s.remote {
+                    print("path changed to \(s.remote ? "this network" : "the internet"): restarting the stream")
+                    // In a new task: the restart cancels this one (stopStreaming), which would cancel the restart too.
+                    Task { await self.restartForDisplayChoice() }
+                    return
+                }
                 let st = s.pipeline.currentStats
+                if n % 20 == 0 { self.logStats(st, session: s) }
                 self.stats = st
                 let msg = HostStats(encodeMicros: UInt32(clamping: Int(st.lastEncodeMs * 1000)), framesSent: UInt32(clamping: st.framesSent),
                                     keyframes: UInt32(clamping: st.keyframes), refinements: UInt32(clamping: st.refinements),
@@ -537,6 +558,38 @@ final class HostController {
                 await server.send([msg.message], to: s.peerKey)
             }
         }
+    }
+
+    /// Away from home: the session isn't on this network. A phone at home that dials the home's public address
+    /// arrives from that address (the router loops it back), so it counts as home.
+    private func isRemote(_ key: [UInt8], server: HostSessionServer) async -> Bool {
+        if await server.isLocalPath(of: key) ?? true { return false }
+        guard let home = publicAddress.effective, !home.isEmpty else { return true }
+        return await server.sourceHost(of: key) != home
+    }
+
+    @ObservationIgnored private var lastLogged: (stats: HostVideoPipeline.Stats, at: ContinuousClock.Instant)?
+    @ObservationIgnored private var tally = PathTally()
+
+    /// Every 10 s while streaming, for diagnosing a session afterwards (host.log).
+    private func logStats(_ st: HostVideoPipeline.Stats, session s: StreamSession) {
+        let now = ContinuousClock.now
+        defer { lastLogged = (st, now) }
+        guard let (prev, at) = lastLogged else { return }
+        let secs = max(Double((now - at).components.seconds), 1)
+        let frames = st.framesSent - prev.framesSent
+        print(String(format: "stats: %.0f fps · %.2f Mbit/s (target %.2f) · encode %.1f ms · %d keyframes · %d refines · dropped %d encoder %d busy",
+                     Double(frames) / secs, Double(st.bytesSent - prev.bytesSent) * 8 / secs / 1e6, Double(s.targetBitrate) / 1e6,
+                     st.lastEncodeMs, st.keyframes - prev.keyframes, st.refinements - prev.refinements,
+                     st.encoderDrops - prev.encoderDrops, st.skippedWhileBusy - prev.skippedWhileBusy))
+        print("path: " + tally.summary)
+        tally = PathTally()
+        if let c = s.injector?.takeCounts() {
+            print("input: \(c.messages) messages from the phone · \(c.actions) posted · \(c.refused) refused (no Accessibility) · \(droppedInput) dropped while the Mac was in use")
+        } else if droppedInput > 0 || s.injector == nil {
+            print("input: no injector (the phone didn't offer input) · \(droppedInput) dropped")
+        }
+        droppedInput = 0
     }
 
     /// Mac → phone on every change and every 2 s (protocol 1.1 phones only).
@@ -560,9 +613,11 @@ final class HostController {
         session.injector = injector
         injector.start()
         guard cursor else { return }
+        let space = injector.pointerSpace
+        if !space.isIdentity { print(String(format: "pointer: picture is smaller than the display, moves ×%.2f", space.scaleX)) }
         let monitor = CursorMonitor { [weak self] shape, isNew in
             injector.setShape(shape.shapeId)
-            if isNew { self?.sendBulk(shape.message) }
+            if isNew { self?.sendBulk(space.pictureShape(shape).message) }
         }
         cursorMonitor = monitor
         monitor.start()
@@ -684,22 +739,33 @@ final class StreamSession {
     private var sentEWMA = 0.0
     private(set) var targetBitrate: Int
     var injector: InputInjector?
+    let remote: Bool
+    let fps: Int
+    static let remoteMaxWidth = 1600
+    /// One pass at 400 ms to a readable QP, instead of 120 ms + 400 ms down to near-lossless QP 12.
+    static let remoteRefinement = [RefinementScheduler.Stage(delay: .milliseconds(400), maxQP: 24)]
 
     /// - Parameters:
     ///   - adaptive: the phone sends `ReceiverReport`s, so rate control and pacing are on.
     ///   - fec: the phone understands XOR parity fragments (`fecXor`). Never send parity to one that doesn't:
     ///     it would take a parity fragment for a data one.
+    ///   - remote: the phone is on the internet, not this network. The Mac's upload (often a few Mbit/s) is
+    ///     then the bottleneck, and a full-size 4:4:4 frame takes seconds to send, so: at most 1600 px wide,
+    ///     4:2:0, 60 fps, a lower start bitrate, and one lighter refinement instead of a near-lossless one.
     init(peerKey: [UInt8], mode: DisplayMode, use444: Bool, adaptive: Bool, fec: Bool, clientCursor: Bool, mirror: Bool,
-         continuing: (frameId: UInt32, generation: UInt16)? = nil, server: HostSessionServer) async throws {
+         remote: Bool = false, continuing: (frameId: UInt32, generation: UInt16)? = nil, server: HostSessionServer) async throws {
         self.peerKey = peerKey
         self.mode = mode
+        self.remote = remote
+        fps = remote ? min(Int(mode.refreshHz), 60) : Int(mode.refreshHz)
         let testPattern = ProcessInfo.processInfo.environment["CLAMSHELL_TEST_PATTERN"] == "1"
         guard testPattern || CGPreflightScreenCaptureAccess() else { throw StartError.noScreenRecording }
         let w: Int, h: Int
         if mirror, let main = Self.realDisplay() {
             // The whole Mac: its main display, scaled down to fit the phone's largest posture (never up).
             let (pw, ph) = Self.pixelSize(main)
-            let fit = min(Double(mode.widthPixels) / Double(pw), Double(mode.heightPixels) / Double(ph), 1)
+            var fit = min(Double(mode.widthPixels) / Double(pw), Double(mode.heightPixels) / Double(ph), 1)
+            if remote { fit = min(fit, Double(Self.remoteMaxWidth) / Double(pw)) }
             w = Int(Double(pw) * fit) & ~1
             h = Int(Double(ph) * fit) & ~1
             displayID = main
@@ -719,13 +785,13 @@ final class StreamSession {
         height = h
 
         var cfg = EncoderConfig(width: w, height: h)
-        cfg.fps = Int(mode.refreshHz)
+        cfg.fps = fps
         // Ceiling 50 Mbit/s (M1: 25 dropped ~half the frames of a continuous full-screen scroll on the LAN).
         // Override: `defaults write <bundle id> bitrateMbps 80`. With reports the controller starts at
         // 8 Mbit/s, below a typical hotel or LTE downlink; its start-up ramp reaches a LAN's ceiling in ~2 s.
         let mbps = UserDefaults.standard.integer(forKey: "bitrateMbps")
         let ceiling = (mbps > 0 ? mbps : 50) * 1_000_000
-        let start = adaptive ? min(ceiling, 8_000_000) : ceiling
+        let start = adaptive ? min(ceiling, remote ? 3_000_000 : 8_000_000) : ceiling
         cfg.averageBitrate = start
         targetBitrate = start
         controller = adaptive ? BitrateController(start: start, min: 1_500_000, max: ceiling) : nil
@@ -740,6 +806,7 @@ final class StreamSession {
         let (stream, outbox) = AsyncStream.makeStream(of: OutFrame.self, bufferingPolicy: .unbounded)
         self.outbox = outbox
         let pipeline = try HostVideoPipeline(config: cfg, chroma: use444 ? .yuv444 : .yuv420,
+                                             refinement: remote ? Self.remoteRefinement : RefinementScheduler.defaultStages,
                                              sessionOverhead: SecureSession.overhead, maxUnsentFrames: 2,
                                              continuing: continuing) { payloads, id, key in
             outbox.yield(OutFrame(payloads: payloads, frameId: id, isKeyframe: key))
@@ -775,7 +842,7 @@ final class StreamSession {
             return
         }
         // 4:4:4 needs full chroma from SCK, so BGRA (the pipeline converts to 444v); 4:2:0 takes 420v as is.
-        try await capture.start(displayID: displayID, width: w, height: h, fps: Int(mode.refreshHz), showsCursor: !clientCursor,
+        try await capture.start(displayID: displayID, width: w, height: h, fps: fps, showsCursor: !clientCursor,
                                 pixelFormat: use444 ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
     }
 
@@ -900,4 +967,40 @@ final class StreamSession {
 
 private extension UInt16 {
     var nonZero: UInt16? { self == 0 ? nil : self }
+}
+
+/// What the phone said about the path between two `stats:` lines: its loss, delay and keyframe requests.
+struct PathTally {
+    private var expected = 0, received = 0, fec = 0, lost = 0, completed = 0, bytes = 0
+    private var maxDelayUs: UInt32 = 0, rttUs: UInt32 = 0
+    private var reasons: [String: Int] = [:]
+
+    mutating func add(_ r: ReceiverReport) {
+        bytes += Int(r.bytesReceived)
+        expected += Int(r.fragmentsExpected)
+        received += Int(r.fragmentsReceived)
+        fec += Int(r.fecRecovered)
+        lost += Int(r.framesLost)
+        completed += Int(r.framesCompleted)
+        maxDelayUs = max(maxDelayUs, r.queuingDelayMicros)
+        rttUs = r.rttMicros
+    }
+
+    mutating func request(_ reason: KeyframeReason?) {
+        let name = switch reason {
+        case .sessionStart: "start"
+        case .frameLost: "lost"
+        case .decoderError: "decoder"
+        case .formatChanged: "format"
+        case .unknown, nil: "other"
+        }
+        reasons[name, default: 0] += 1
+    }
+
+    var summary: String {
+        let loss = expected > 0 ? Double(expected - received) / Double(expected) * 100 : 0
+        let asks = reasons.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+        return String(format: "phone got %.0f KB · fragment loss %.1f%% (%d fixed by FEC) · frames %d shown %d lost · delay up to %d ms · rtt %d ms · keyframe asks: %@",
+                      Double(bytes) / 1024, loss, fec, completed, lost, Int(maxDelayUs / 1000), Int(rttUs / 1000), asks.isEmpty ? "none" : asks)
+    }
 }

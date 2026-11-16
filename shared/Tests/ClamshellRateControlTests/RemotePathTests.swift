@@ -149,6 +149,29 @@ struct RateControllerTests {
         #expect(c.inStartup && c.bitrate == 50_000_000)
     }
 
+    /// Mobile data seen from home (2026-11-16): 0% loss, 60–220 ms delay swings, a static screen sending
+    /// 0.4 Mbit/s. That pinned the target at the 1.5 Mbit/s floor, so every screen change was blurry and late.
+    @Test func cellularJitterDoesNotPinTheFloor() {
+        var c = BitrateController(start: 3_000_000, min: 1_500_000, max: 50_000_000)
+        let swings: [Double] = [60, 150, 110, 220, 90, 150, 70, 180]
+        var t: UInt64 = 0
+        for i in 0..<100 {                                 // idle: 10 s of reports while almost nothing is sent
+            t += 100 * ms
+            c.update(nowNs: t, loss: 0, framesLost: 0, queuingDelayMs: swings[i % swings.count], sentBitrate: 400_000)
+        }
+        #expect(c.bitrate == 3_000_000)
+        #expect(c.jitterMs > 80)
+        for i in 0..<30 {                                  // the screen moves: same noise, now using the target
+            t += 100 * ms
+            c.update(nowNs: t, loss: 0, framesLost: 0, queuingDelayMs: swings[i % swings.count] * 0.5, sentBitrate: c.bitrate)
+        }
+        #expect(c.bitrate > 3_000_000)
+        let before = c.bitrate
+        t += 400 * ms                                      // a real queue on top of the noise still backs off
+        c.update(nowNs: t, loss: 0, framesLost: 0, queuingDelayMs: c.jitterMs + 120, sentBitrate: c.bitrate)
+        #expect(c.bitrate < before)
+    }
+
     @Test func startupRampsFastThenSlows() {
         var c = BitrateController(start: 8_000_000, max: 50_000_000)
         for i in 1...10 { c.update(nowNs: UInt64(i) * 250 * ms, loss: 0, framesLost: 0, queuingDelayMs: 2, sentBitrate: c.bitrate) }

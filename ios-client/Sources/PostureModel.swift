@@ -71,12 +71,13 @@ final class PostureModel {
         }
     }
 
-    /// The Mac's virtual display for a posture (docs/video.md §5).
+    /// The Mac's virtual display for a posture (docs/video.md §5). Book keeps the laptop picture: it spans both
+    /// pages above the split keyboard, so turning the Duo sideways doesn't resize the Mac's screen.
     static func mode(for p: Posture) -> DisplayMode {
         switch p {
         case .laptop: .laptop
         case .flat: .flat
-        case .book: .book
+        case .book: .laptop
         case .cover: .cover
         }
     }

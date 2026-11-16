@@ -66,9 +66,11 @@ Original, not derived from Apple hardware or any competitor's "shell".
 - **Menu bar:** swipe down from the top edge, the same way, for the Mac menu bar when it's autohidden.
 
 ## 5. Book posture (partially open, fold vertical)
-- Left: the Mac (667 × 939 pt portrait mode, good for reading docs and PRs).
-- Right: trackpad with a keyboard toggle.
-- An alternative ("Span") shows the Mac across both halves with a gap at the fold, and the trackpad becomes a floating disc.
+- The Mac's picture stays as in laptop posture (same display mode), across both pages at the top.
+- Below it the keyboard splits at the fold: left half (esc–F6, the `` ` `` key to 6, Tab–T, Caps–G, Shift–B, 🌐 ⌃ ⌥ ⌘ space) on the left page, right half (F7–🔒, 7–delete, Y to the backslash key, H–return, N–shift, space ⌘ ⌥ arrows) on the right. Each half keeps MacBook-shaped keys (about 1.35× as wide as tall) at its page's outer edge; within a half, the key next to the fold grows so the rows line up.
+- The trackpad strip (optional) sits between the halves, one pad per page beside the fold (20–45% of each page by its size setting), so the picture keeps its height. It still reads a finger on each page as one gesture.
+- Key size, whether keyboard and strip show, and the strip's size are in Layout › Keyboard & trackpad (shared with laptop posture).
+- Earlier design, replaced in 1.0.1: the Mac on the left page in a 667 × 939 pt portrait mode, the deck on the right.
 
 ## 6. Closed: the cover screen (5.4″)
 - **Glance view** (default when you close it during a session; the session pauses after 30 s):

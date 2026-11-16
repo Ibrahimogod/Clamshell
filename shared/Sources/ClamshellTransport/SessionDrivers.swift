@@ -95,6 +95,22 @@ public actor HostSessionServer {
         }
     }
 
+    /// Whether a peer's current path comes from this network (private, link-local or loopback address).
+    /// False for the internet, including the 443 edge; nil without a session.
+    /// "udp 1.2.3.4" or "wss …", for the host log.
+    public func pathDescription(of peerKey: [UInt8]) -> String? {
+        current[peerKey].flatMap { sessions[$0].map { "\($0.remote.kind) \($0.remote.sourceHost)" } }
+    }
+
+    /// The peer's source address without the port.
+    public func sourceHost(of peerKey: [UInt8]) -> String? {
+        current[peerKey].flatMap { sessions[$0]?.remote.sourceHost }
+    }
+
+    public func isLocalPath(of peerKey: [UInt8]) -> Bool? {
+        current[peerKey].flatMap { sessions[$0]?.remote.isLocalNetwork }
+    }
+
     /// The kind of path ("udp", "wss") a peer's session currently uses.
     public func pathKind(of peerKey: [UInt8]) -> String? {
         current[peerKey].flatMap { sessions[$0]?.remote.kind }

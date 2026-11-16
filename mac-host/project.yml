@@ -15,7 +15,9 @@ targets:
   ClamshellHost:
     type: application
     platform: macOS
-    sources: [Sources]
+    sources:
+      - Sources
+      - path: Resources/Assets.xcassets       # app icon (tools/scripts/make-icons.swift)
     dependencies:
       - package: ClamshellKit
         products: [ClamshellWire, ClamshellSession, ClamshellTransport, ClamshellStream, ClamshellVideo,
@@ -36,8 +38,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).host
-        MARKETING_VERSION: 1.0.0
-        CURRENT_PROJECT_VERSION: 2
+        MARKETING_VERSION: 1.0.1
+        CURRENT_PROJECT_VERSION: 3
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_APP_SANDBOX: NO
         CODE_SIGN_STYLE: Automatic

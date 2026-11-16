@@ -25,10 +25,13 @@ final class LocalUserGuard {
     func start() {
         guard monitor == nil else { return }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .mouseMoved]) { [weak self] e in
-            let tagged = e.cgEvent?.getIntegerValueField(.eventSourceUserData) == InputInjector.tag
+            // Ours: the tag, or (in case a coalesced event lost it) posted by this very process.
+            let pid = e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? 0
+            let tagged = e.cgEvent?.getIntegerValueField(.eventSourceUserData) == InputInjector.tag || pid == Int64(getpid())
             let keyCode = e.type == .keyDown ? e.keyCode : nil
             let small = e.type == .mouseMoved && abs(e.deltaX) + abs(e.deltaY) < 3
-            MainActor.assumeIsolated { self?.saw(tagged: tagged, escape: keyCode == 53, ignorable: small) }
+            let what = "\(Self.name(e.type)) from pid \(pid)\(pid > 0 ? " (\(Self.processName(pid)))" : "")"
+            MainActor.assumeIsolated { self?.saw(tagged: tagged, escape: keyCode == 53, ignorable: small, what: what) }
         }
     }
 
@@ -41,14 +44,14 @@ final class LocalUserGuard {
         if active { active = false; onChange(false) }
     }
 
-    private func saw(tagged: Bool, escape: Bool, ignorable: Bool) {
+    private func saw(tagged: Bool, escape: Bool, ignorable: Bool, what: String) {
         guard !tagged, !ignorable else { return }
         if escape {
             let now = Date()
             escapes = escapes.filter { now.timeIntervalSince($0) < 1.5 } + [now]
             if escapes.count >= 3 { escapes.removeAll(); onPanic(); return }
         }
-        if !active { active = true; onChange(true) }
+        if !active { active = true; print("local input: \(what)"); onChange(true) }
         quietTimer?.invalidate()
         quietTimer = Timer.scheduledTimer(withTimeInterval: Self.quietSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -59,15 +62,28 @@ final class LocalUserGuard {
         }
     }
 
+    private static func name(_ t: NSEvent.EventType) -> String {
+        switch t {
+        case .keyDown: "key"
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown: "click"
+        case .scrollWheel: "scroll"
+        case .mouseMoved: "mouse move"
+        default: "event \(t.rawValue)"
+        }
+    }
+
+    private static func processName(_ pid: Int64) -> String {
+        NSRunningApplication(processIdentifier: pid_t(truncatingIfNeeded: pid))?.localizedName ?? "not an app: real hardware or a system service"
+    }
+
     /// "Your iPhone is viewing this Mac": a notification on every session start (T9). Asks once.
     static func notifySessionStarted(phone: String) {
-        let c = UNUserNotificationCenter.current()
-        c.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             let content = UNMutableNotificationContent()
             content.title = "\(phone) is connected"
             content.body = "Clamshell is showing this Mac's screen to it. Press Esc three times to disconnect."
-            c.add(UNNotificationRequest(identifier: "clamshell.session", content: content, trigger: nil))
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "clamshell.session", content: content, trigger: nil))
         }
     }
 }

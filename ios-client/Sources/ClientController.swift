@@ -109,12 +109,20 @@ final class ClientController {
     private(set) var hardware: HardwareInput?
     /// How the Duo is held (ADR-0012), and the per-posture choices.
     let posture = PostureModel()
-    var deckMode = DeckMode(rawValue: UserDefaults.standard.string(forKey: "deckMode") ?? "") ?? .deck {
-        didSet { UserDefaults.standard.set(deckMode.rawValue, forKey: "deckMode") }
+    /// Key size, which of keyboard and trackpad strip show, and the strip's size (Layout › Keyboard & trackpad).
+    var deck = ClientController.loadDeck() {
+        didSet { if let d = try? JSONEncoder().encode(deck) { UserDefaults.standard.set(d, forKey: "deckSettings") } }
     }
+    private static func loadDeck() -> DeckSettings {
+        if let d = UserDefaults.standard.data(forKey: "deckSettings"), let s = try? JSONDecoder().decode(DeckSettings.self, from: d) { return s }
+        return DeckSettings(legacyDeckMode: UserDefaults.standard.string(forKey: "deckMode"))
+    }
+    /// Pinch on the picture zooms the phone's view of it (the Mac doesn't change).
+    let pictureZoom = PictureZoom()
     /// Flat and book: a touch on the picture is a click there (true), or the picture is a trackpad (false).
-    var directTouch = UserDefaults.standard.object(forKey: "directTouch") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(directTouch, forKey: "directTouch") }
+    /// Off (the default since 1.0.1): the picture is a trackpad, as on a MacBook. On: touch clicks where you touch.
+    var directTouch = UserDefaults.standard.object(forKey: "directTouchOnPicture") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(directTouch, forKey: "directTouchOnPicture") }
     }
     /// The Mac's display mode now (it follows the posture on a 1.4 Mac).
     private(set) var displayMode = DisplayMode.laptop
@@ -208,7 +216,7 @@ final class ClientController {
                 let path: any PacketPath = if let bonjour { UDPClient(endpoint: bonjour, name: "pair") }
                     else { UDPClient(host: targets[0].0, port: targets[0].1, name: "pair") }
                 let (mac, endpoint) = try await PairingClient.pair(path: path, identity: identity, invite: invite, phoneName: name) { sas in
-                    Task { @MainActor [weak self] in self?.pairingStatus = .sas(sas) }
+                    Task { @MainActor in self.pairingStatus = .sas(sas) }
                 }
                 let record = PairedMac(publicKey: Data(mac.publicKey), psk: Data(mac.psk), name: mac.name, udpPort: endpoint.udpPort,
                                        tcpPort: endpoint.tcpPort, publicHost: endpoint.publicHost, paired: .now)
@@ -286,7 +294,7 @@ final class ClientController {
             guard let identity = try? identity() else { checking = false; return }
             for (name, detail, make) in plan {
                 let r = await PathProbe.check(make(), identity: identity, mac: peer,
-                                              hello: Hello(appVersion: "0.1.0", build: 1, capabilities: [], deviceName: "check"))
+                                              hello: Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: [], deviceName: "check"))
                 guard let i = checks.firstIndex(where: { $0.id == name }) else { continue }
                 switch r {
                 case .reachable(let ms): checks[i] = PathCheck(id: name, detail: "\(detail) · \(Int(ms.rounded())) ms", ok: true)
@@ -469,17 +477,19 @@ final class ClientController {
             caps.insert(.audioOpus)                              // muting is local, so a later unmute plays at once
             let wanted = PostureModel.mode(for: posture.display)
             let modes = [wanted] + [DisplayMode.laptop, .flat, .book, .cover].filter { $0 != wanted }
-            let hello = Hello(appVersion: "0.1.0", build: 1, capabilities: caps, displayModes: modes, maxFps: 120,
+            let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: caps, displayModes: modes, maxFps: 120,
                               deviceName: UIDevice.current.name)
             // Race the paths (ADR-0002): LAN (Bonjour), home UDP, then TLS + WebSocket on TCP, 150 ms apart.
             var candidates: [PathRacer.Candidate] = []
             let isManual = host.name == manualAddress
-            if !isManual {
-                let ep = host.endpoint
+            // Connect (the home address) at home still tries the Mac on this Wi-Fi first: the router's own
+            // public address loops back slowly or, on some routers, drops the video entirely.
+            let lan = isManual ? (hosts.first { $0.name == mac.name } ?? hosts.first) : host
+            if let ep = lan?.endpoint {
                 candidates.append(.init(rank: 0, delay: .zero) { UDPClient(endpoint: ep, name: "lan") })
             }
             if let (h, p) = Self.parse(manualAddress) {
-                let start: Duration = isManual ? .zero : .milliseconds(150)
+                let start: Duration = lan == nil ? .zero : .milliseconds(150)
                 candidates.append(.init(rank: 1, delay: start) { UDPClient(host: h, port: p, name: "udp") })
                 if let tp = UInt16(exactly: tcpPort), tp > 0 {
                     candidates.append(.init(rank: 2, delay: start + .milliseconds(150)) { WSSClient(host: h, port: tp, name: "tcp") })
@@ -729,6 +739,7 @@ final class ClientController {
 
     private func connectionEnded(_ reason: String) {
         guard case .streaming = phase else { return }
+        pictureZoom.reset()
         disconnect()
         phase = .failed(reason)
     }

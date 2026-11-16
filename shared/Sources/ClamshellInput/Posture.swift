@@ -98,14 +98,6 @@ public struct PostureDebouncer: Sendable {
     }
 }
 
-/// What the lower half shows in the laptop posture.
-public enum DeckMode: String, Sendable, CaseIterable, Codable {
-    case deck    // keyboard + trackpad
-    case split   // split keyboard on the sides, trackpad in the middle
-    case pad     // trackpad only
-    case keys    // keyboard only
-}
-
 /// Hardware keyboard remaps (M4). iOS keeps ⌘-Tab and ⌘-Space for itself, so ⌥-Tab and ⌃-Space are sent
 /// to the Mac as ⌘-Tab and ⌘-Space. Works on HID usages; the swapped modifier stays ⌘ until it is released.
 public struct HardwareKeyRemap: Sendable {

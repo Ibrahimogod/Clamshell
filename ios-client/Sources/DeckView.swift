@@ -22,6 +22,29 @@ struct DeckKey {
     let width: CGFloat           // in key units
     var kind: Kind = .normal
     var shifted: String? = nil
+
+    func resized(_ w: CGFloat) -> DeckKey { DeckKey(label: label, usage: usage, width: w, kind: kind, shifted: shifted) }
+}
+
+/// Which part of the keyboard a deck view shows: all of it, or one page's half in book posture.
+enum KeyboardHalf { case whole, left, right }
+
+/// fn, caps lock and sticky modifiers, shared by the two halves of a split keyboard so 🌐 on the left page
+/// turns the right page's top row into F-keys, and so on. Any change redraws both halves.
+@MainActor
+final class KeyboardState {
+    static let changed = Notification.Name("KeyboardState.changed")
+    var fnHeld = false
+    var fnSent = false
+    var capsOn = false
+    var sticky = StickyModifiers()
+    func changed() { NotificationCenter.default.post(name: Self.changed, object: self) }
+}
+
+/// The fold between the two pages in book posture, in a deck view's own coordinates: nothing goes there.
+struct FoldGap: Equatable {
+    var x: CGFloat
+    var width: CGFloat
 }
 
 /// The MacBook ANSI layout, 14.5 units wide; the function row is half height.
@@ -59,6 +82,42 @@ enum DeckLayout {
     ]
 
     static func letter(_ c: Character) -> UInt16 { UInt16(c.asciiValue.map { $0 - 97 + 0x04 } ?? 0x04) }
+
+    /// What one keyboard area holds: the rows, how many key units wide it is, and whether the arrows follow
+    /// the bottom row.
+    struct Plan {
+        let function: [DeckKey]
+        let rows: [[DeckKey]]
+        let bottom: [DeckKey]
+        let units: CGFloat
+        let arrows: Bool
+    }
+
+    /// The whole MacBook keyboard; the function row fills the width exactly.
+    static let whole = Plan(function: stretched(functionRow, to: 14.5), rows: rows, bottom: bottom, units: 14.5, arrows: true)
+
+    /// Book posture: the keyboard split at the fold where a split MacBook keyboard would be (after 6, T, G, B
+    /// and F6). Each half gets its own space bar; the key next to the fold grows so every row fills its page.
+    static func half(left: Bool) -> Plan {
+        let units: CGFloat = left ? 7.25 : 8
+        let counts = [7, 6, 6, 6]                    // keys on the left page: ` to 6, tab to T, caps to G, shift to B
+        let rows = zip(rows, counts).map { r, n in fill(left ? Array(r.prefix(n)) : Array(r.dropFirst(n)), to: units, foldAtEnd: left) }
+        let space = k("", 0x2C, 2.5)
+        let bottomRow = left ? Array(bottom.prefix(4)) + [space] : [space] + Array(bottom.suffix(2))
+        let fRow = left ? Array(functionRow.prefix(7)) : Array(functionRow.dropFirst(7))
+        return Plan(function: stretched(fRow, to: units), rows: rows,
+                    bottom: fill(bottomRow, to: left ? units : units - 3, foldAtEnd: left), units: units, arrows: !left)
+    }
+
+    private static func fill(_ keys: [DeckKey], to units: CGFloat, foldAtEnd: Bool) -> [DeckKey] {
+        let w = KeyboardSplit.fill(keys.map { Double($0.width) }, to: Double(units), foldAtEnd: foldAtEnd)
+        return zip(keys, w).map { $0.resized(CGFloat($1)) }
+    }
+
+    private static func stretched(_ keys: [DeckKey], to units: CGFloat) -> [DeckKey] {
+        let total = keys.reduce(0) { $0 + $1.width }
+        return total > 0 ? keys.map { $0.resized($0.width * units / total) } : keys
+    }
 }
 
 /// The keyboard: physical keys under each finger (a key stays the key it was touched on, no sliding),
@@ -79,15 +138,29 @@ final class KeyboardDeckView: UIView {
     private var layoutObserver: NSObjectProtocol?
     /// 🌐 with a 1.6 Mac: tapped alone it switches the Mac's input source; held with another key it is fn.
     /// So fn reaches the Mac only once another key goes down while it's held.
-    private var fnSent = false
-    var sticky = UserDefaults.standard.bool(forKey: "stickyModifiers")
+        var sticky = UserDefaults.standard.bool(forKey: "stickyModifiers")
+    /// Book posture: this view holds one half of the split keyboard.
+    var half: KeyboardHalf = .whole { didSet { if half != oldValue { setNeedsLayout() } } }
+    /// fn, caps lock and sticky modifiers; the two halves of a split keyboard share one.
+    var state = KeyboardState() {
+        didSet {
+            guard state !== oldValue else { return }
+            observeState()
+            setNeedsDisplay()
+        }
+    }
+    private var stateObserver: NSObjectProtocol?
+
+    private func observeState() {
+        if let stateObserver { NotificationCenter.default.removeObserver(stateObserver) }
+        stateObserver = NotificationCenter.default.addObserver(forName: KeyboardState.changed, object: state, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setNeedsDisplay() }
+        }
+    }
 
     private struct Placed { let key: DeckKey; let frame: CGRect }
     private var placed: [Placed] = []
     private var down: [ObjectIdentifier: (Placed, usage: UInt16, page: UInt16)] = [:]
-    private var stickyState = StickyModifiers()
-    private var fnHeld = false
-    private var capsOn = false
     private let haptic = UIImpactFeedbackGenerator(style: .light)
 
     override init(frame: CGRect) {
@@ -95,6 +168,7 @@ final class KeyboardDeckView: UIView {
         isMultipleTouchEnabled = true
         backgroundColor = DeckStyle.base
         contentMode = .redraw
+        observeState()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
@@ -106,28 +180,36 @@ final class KeyboardDeckView: UIView {
 
     private func layout() {
         placed.removeAll()
+        switch half {
+        case .whole: place(DeckLayout.whole, in: bounds)
+        case .left: place(DeckLayout.half(left: true), in: bounds)
+        case .right: place(DeckLayout.half(left: false), in: bounds)
+        }
+    }
+
+    private func place(_ plan: DeckLayout.Plan, in area: CGRect) {
         let gap: CGFloat = 4
-        let unit = (bounds.width - gap) / 14.5
-        let rowH = (bounds.height - gap * 7) / 5.5
-        var y = gap
-        func row(_ keys: [DeckKey], height: CGFloat) {
-            var x = gap
+        let unit = (area.width - gap) / plan.units
+        let rowH = (area.height - gap * 7) / 5.5
+        var y = area.minY + gap
+        /// Lays out one row and returns where it ends.
+        @discardableResult func row(_ keys: [DeckKey], height: CGFloat) -> CGFloat {
+            var x = area.minX + gap
             for k in keys {
                 let w = k.width * unit - gap
                 placed.append(Placed(key: k, frame: CGRect(x: x, y: y, width: w, height: height)))
                 x += k.width * unit
             }
             y += height + gap
+            return x
         }
-        // The function row fills the width exactly.
-        let fw = DeckLayout.functionRow.reduce(0) { $0 + $1.width }
-        row(DeckLayout.functionRow.map { DeckKey(label: $0.label, usage: $0.usage, width: $0.width * 14.5 / fw, kind: $0.kind, shifted: $0.shifted) },
-            height: rowH / 2)
-        for r in DeckLayout.rows { row(r, height: rowH) }
+        row(plan.function, height: rowH / 2)
+        for r in plan.rows { row(r, height: rowH) }
         let bottomY = y
-        row(DeckLayout.bottom, height: rowH)
+        let ax = row(plan.bottom, height: rowH)
+        guard plan.arrows else { return }
         // Inverted-T arrows in the last 3 units.
-        let ax = gap + 11.5 * unit, half = (rowH - gap) / 2, aw = unit - gap
+        let half = (rowH - gap) / 2, aw = unit - gap
         placed.append(Placed(key: DeckKey(label: "◀", usage: 0x50, width: 1), frame: CGRect(x: ax, y: bottomY + half + gap, width: aw, height: half)))
         placed.append(Placed(key: DeckKey(label: "▲", usage: 0x52, width: 1), frame: CGRect(x: ax + unit, y: bottomY, width: aw, height: half)))
         placed.append(Placed(key: DeckKey(label: "▼", usage: 0x51, width: 1), frame: CGRect(x: ax + unit, y: bottomY + half + gap, width: aw, height: half)))
@@ -140,17 +222,17 @@ final class KeyboardDeckView: UIView {
         for p in placed {
             let isDown = downFrames.contains(p.frame.origin.x * 10_000 + p.frame.origin.y)
             var fill = isDown ? DeckStyle.keyDown : DeckStyle.key
-            if case .modifier = p.key.kind, stickyState.state(p.key.usage) != .off { fill = DeckStyle.ember.withAlphaComponent(0.5) }
-            if case .fn = p.key.kind, fnHeld { fill = DeckStyle.ember.withAlphaComponent(0.5) }
+            if case .modifier = p.key.kind, state.sticky.state(p.key.usage) != .off { fill = DeckStyle.ember.withAlphaComponent(0.5) }
+            if case .fn = p.key.kind, state.fnHeld { fill = DeckStyle.ember.withAlphaComponent(0.5) }
             fill.setFill()
             UIBezierPath(roundedRect: p.frame, cornerRadius: 5).fill()
             var text = p.key.label
             var corner: String?
-            if case .media = p.key.kind, fnHeld, let s = p.key.shifted { text = s }
+            if case .media = p.key.kind, state.fnHeld, let s = p.key.shifted { text = s }
             if shift, let s = p.key.shifted, case .normal = p.key.kind { text = s }
-            if p.key.usage >= 0x04 && p.key.usage <= 0x1D, shift || capsOn { text = text.uppercased() }
+            if p.key.usage >= 0x04 && p.key.usage <= 0x1D, shift || state.capsOn { text = text.uppercased() }
             if case .normal = p.key.kind, let layout = input?.keyboardLayout, let l = layout.label(p.key.usage) {
-                let mac = shift ? l.shifted : (capsOn ? l.base.uppercased() : l.base)
+                let mac = shift ? l.shifted : (state.capsOn ? l.base.uppercased() : l.base)
                 if !mac.isEmpty {
                     // A non-Latin layout: keep the English letter small in the corner, for ⌘ shortcuts.
                     if mac.lowercased() != text.lowercased(), !p.key.label.isEmpty, mac.unicodeScalars.contains(where: { $0.value > 0x24F }) {
@@ -161,7 +243,7 @@ final class KeyboardDeckView: UIView {
             }
             if case .fn = p.key.kind, let layout = input?.keyboardLayout { text = "🌐 " + Self.shortName(layout) }
             let small = text.count > 2 || p.frame.height < 30
-            let font = UIFont.systemFont(ofSize: small ? min(11, p.frame.height * 0.4) : min(17, p.frame.height * 0.45), weight: .medium)
+            let font = UIFont.systemFont(ofSize: small ? min(13, p.frame.height * 0.4) : min(21, p.frame.height * 0.45), weight: .medium)
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: DeckStyle.label]
             let size = (text as NSString).size(withAttributes: attrs)
             (text as NSString).draw(at: CGPoint(x: p.frame.midX - size.width / 2, y: p.frame.midY - size.height / 2), withAttributes: attrs)
@@ -169,7 +251,7 @@ final class KeyboardDeckView: UIView {
                 let ca: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: min(9, p.frame.height * 0.25)), .foregroundColor: DeckStyle.dim]
                 (corner as NSString).draw(at: CGPoint(x: p.frame.minX + 3, y: p.frame.minY + 2), withAttributes: ca)
             }
-            if p.key.usage == 0x39, capsOn {
+            if p.key.usage == 0x39, state.capsOn {
                 DeckStyle.ember.setFill()
                 UIBezierPath(ovalIn: CGRect(x: p.frame.minX + 6, y: p.frame.minY + 6, width: 5, height: 5)).fill()
             }
@@ -204,11 +286,11 @@ final class KeyboardDeckView: UIView {
     private func resolve(_ k: DeckKey) -> (usage: UInt16, page: UInt16)? {
         switch k.kind {
         case .media(let media, let fKey):
-            if fnHeld || media == nil { return (fKey, HIDUsage.keyboardPage) }
+            if state.fnHeld || media == nil { return (fKey, HIDUsage.keyboardPage) }
             return media.map { ($0.rawValue, HIDUsage.consumerPage) }
         case .lock: return nil
         default:
-            guard fnHeld else { return (k.usage, HIDUsage.keyboardPage) }
+            guard state.fnHeld else { return (k.usage, HIDUsage.keyboardPage) }
             let fnMap: [UInt16: UInt16] = [0x50: 0x4A, 0x4F: 0x4D, 0x52: 0x4B, 0x51: 0x4E, 0x2A: 0x4C]
             return (fnMap[k.usage] ?? k.usage, HIDUsage.keyboardPage)
         }
@@ -224,18 +306,18 @@ final class KeyboardDeckView: UIView {
                 continue
             }
             if case .fn = p.key.kind {
-                fnHeld = true
+                state.fnHeld = true
                 if switchesInputSource {
-                    fnSent = false
+                    state.fnSent = false
                     down[ObjectIdentifier(t)] = (p, HIDUsage.function, HIDUsage.keyboardPage)
                     continue
                 }
-            } else if fnHeld, switchesInputSource, !fnSent {
-                fnSent = true
+            } else if state.fnHeld, switchesInputSource, !state.fnSent {
+                state.fnSent = true
                 input.key(HIDUsage.function, down: true)
             }
             if sticky, case .modifier = p.key.kind {
-                switch stickyState.tap(p.key.usage, nowNs: PhoneClock.nowNs()) {
+                switch state.sticky.tap(p.key.usage, nowNs: PhoneClock.nowNs()) {
                 case .down: input.key(p.key.usage, down: true)
                 case .up: input.key(p.key.usage, down: false)
                 case .none: break
@@ -243,11 +325,11 @@ final class KeyboardDeckView: UIView {
                 continue
             }
             guard let r = resolve(p.key) else { continue }
-            if r.usage == HIDUsage.capsLock { capsOn.toggle() }
+            if r.usage == HIDUsage.capsLock { state.capsOn.toggle() }
             down[ObjectIdentifier(t)] = (p, r.usage, r.page)
             input.key(r.usage, down: true, page: r.page)
         }
-        setNeedsDisplay()
+        state.changed()
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { release(touches) }
@@ -258,23 +340,23 @@ final class KeyboardDeckView: UIView {
         for t in touches {
             guard let d = down.removeValue(forKey: ObjectIdentifier(t)) else { continue }
             if case .fn = d.0.key.kind, switchesInputSource {
-                fnHeld = false
-                if fnSent {
+                state.fnHeld = false
+                if state.fnSent {
                     input.key(HIDUsage.function, down: false)
                 } else {
                     input.key(HIDUsage.nextInputSource, down: true, page: HIDUsage.clamshellPage)
                     input.key(HIDUsage.nextInputSource, down: false, page: HIDUsage.clamshellPage)
                 }
-                fnSent = false
+                state.fnSent = false
                 continue
             }
             input.key(d.usage, down: false, page: d.page)
-            if case .fn = d.0.key.kind { fnHeld = false }
+            if case .fn = d.0.key.kind { state.fnHeld = false }
             if sticky, case .normal = d.0.key.kind {
-                for u in stickyState.keyReleased() { input.key(u, down: false) }
+                for u in state.sticky.keyReleased() { input.key(u, down: false) }
             }
         }
-        setNeedsDisplay()
+        state.changed()
     }
 }
 
@@ -284,6 +366,21 @@ final class TrackpadView: UIView {
     /// Phone points to Mac points (the Mac display is bigger than this pad).
     var scrollScale: Double = 1.5
     private var interpreter = TrackpadInterpreter()
+    /// Over the picture: pinch zooms the phone's view instead of sending ⌘= / ⌘- to the Mac.
+    var zoom: PictureZoom? {
+        didSet { interpreter.settings.continuousZoom = zoom != nil }
+    }
+    /// Book posture: the strip splits at the fold into one pad per page. A touch that starts on the fold is
+    /// ignored; a finger on each page is still one two-finger gesture.
+    var fold: FoldGap? {
+        didSet {
+            guard fold != oldValue else { return }
+            styleForFold()
+            setNeedsLayout()
+        }
+    }
+    private let pages = [CALayer(), CALayer()]
+    private var ignored: Set<ObjectIdentifier> = []
     private var touchIds: [ObjectIdentifier: Int] = [:]
     private var nextId = 0
     private var link: CADisplayLink?
@@ -297,8 +394,39 @@ final class TrackpadView: UIView {
         layer.cornerRadius = 10
         layer.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
         layer.borderWidth = 1
+        for p in pages {
+            p.backgroundColor = DeckStyle.pad.cgColor
+            p.cornerRadius = 10
+            p.borderColor = UIColor(white: 1, alpha: 0.06).cgColor
+            p.borderWidth = 1
+            p.isHidden = true
+            layer.addSublayer(p)
+        }
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func styleForFold() {
+        let split = fold != nil
+        backgroundColor = split ? .clear : DeckStyle.pad
+        layer.borderWidth = split ? 0 : 1
+        for p in pages { p.isHidden = !split }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let fold else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pages[0].frame = CGRect(x: 0, y: 0, width: max(0, fold.x), height: bounds.height)
+        let right = fold.x + fold.width
+        pages[1].frame = CGRect(x: right, y: 0, width: max(0, bounds.width - right), height: bounds.height)
+        CATransaction.commit()
+    }
+
+    private func onFold(_ p: CGPoint) -> Bool {
+        guard let fold else { return false }
+        return p.x >= fold.x - 4 && p.x <= fold.x + fold.width + 4
+    }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -315,7 +443,11 @@ final class TrackpadView: UIView {
         var out: [Int: (x: Double, y: Double)] = [:]
         for t in event?.allTouches ?? [] where t.view === self && t.phase != .ended && t.phase != .cancelled {
             let id = ObjectIdentifier(t)
-            if touchIds[id] == nil { touchIds[id] = nextId; nextId += 1 }
+            if ignored.contains(id) { continue }
+            if touchIds[id] == nil {
+                if t.phase == .began, onFold(t.location(in: self)) { ignored.insert(id); continue }
+                touchIds[id] = nextId; nextId += 1
+            }
             if let i = touchIds[id] { let p = t.location(in: self); out[i] = (Double(p.x), Double(p.y)) }
         }
         return out
@@ -323,7 +455,7 @@ final class TrackpadView: UIView {
 
     private func update(_ event: UIEvent?, ended: Set<UITouch> = []) {
         let pts = points(event)
-        for t in ended { touchIds.removeValue(forKey: ObjectIdentifier(t)) }
+        for t in ended { touchIds.removeValue(forKey: ObjectIdentifier(t)); ignored.remove(ObjectIdentifier(t)) }
         apply(interpreter.update(pts, at: CACurrentMediaTime()))
     }
 
@@ -336,7 +468,11 @@ final class TrackpadView: UIView {
         guard let input else { return }
         for o in outs {
             switch o {
-            case .move(let dx, let dy): input.move(dx: dx, dy: dy)
+            case .move(let dx, let dy):
+                // Zoomed in, the same finger travel moves the pointer less, so it stays as precise on screen.
+                let k = Double(zoom?.scale ?? 1)
+                input.move(dx: dx / k, dy: dy / k)
+            case .zoom(let f, let x, let y, let dx, let dy): zoom?.pinch(factor: f, x: x, y: y, dx: dx, dy: dy)
             case .button(let b, let d): input.button(b, down: d)
             case .scroll(let dx, let dy, let phase, let vx, let vy):
                 input.scroll(dx: dx * scrollScale, dy: dy * scrollScale, phase: phase, vx: vx * scrollScale, vy: vy * scrollScale)
@@ -354,29 +490,44 @@ final class TrackpadView: UIView {
 
 struct KeyboardDeck: UIViewRepresentable {
     let input: InputClient
+    var half: KeyboardHalf = .whole
+    /// Shared by the two halves of a split keyboard.
+    var state: KeyboardState?
     func makeUIView(context: Context) -> KeyboardDeckView {
         let v = KeyboardDeckView()
         v.input = input
+        v.half = half
+        if let state { v.state = state }
         v.isAccessibilityElement = true
         v.accessibilityLabel = "Mac keyboard"
         v.accessibilityTraits = .allowsDirectInteraction
         return v
     }
-    func updateUIView(_ v: KeyboardDeckView, context: Context) { v.input = input }
+    func updateUIView(_ v: KeyboardDeckView, context: Context) {
+        v.input = input
+        v.half = half
+        if let state { v.state = state }
+    }
 }
 
 struct Trackpad: UIViewRepresentable {
     let input: InputClient
-    /// Over the picture (flat posture, trackpad mode): no fill, so the Mac's screen shows through.
+    /// Over the picture (trackpad mode): no fill, so the Mac's screen shows through.
     var overlay = false
+    /// With `overlay`: pinch zooms the picture on the phone.
+    var zoom: PictureZoom?
+    /// Book posture: one pad per page.
+    var fold: FoldGap?
     func makeUIView(context: Context) -> TrackpadView {
         let v = TrackpadView()
         v.input = input
+        v.zoom = zoom
+        v.fold = fold
         if overlay { v.backgroundColor = .clear; v.layer.borderWidth = 0; v.layer.cornerRadius = 0 }
         v.isAccessibilityElement = true
         v.accessibilityLabel = overlay ? "Trackpad over the Mac's screen" : "Trackpad"
         v.accessibilityTraits = .allowsDirectInteraction
         return v
     }
-    func updateUIView(_ v: TrackpadView, context: Context) { v.input = input }
+    func updateUIView(_ v: TrackpadView, context: Context) { v.input = input; v.fold = fold }
 }

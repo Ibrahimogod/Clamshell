@@ -2,6 +2,71 @@
 
 All notable changes per milestone. Dates are 2026.
 
+## 1.0.1: Smoother away from home, the picture is a trackpad (2026-11-16)
+
+- **Away from home** (the session isn't on the local network) the host streams a lighter profile: at most
+  1600 px wide, at most 60 Hz, HEVC 4:2:0, a 3 Mbit/s start and a single QP 24 refinement at 400 ms instead
+  of the near-lossless QP 18/12 pair. Big 4:4:4 frames and lossless refinements filled a slow home upload and
+  caused the delay and dropped frames. On the LAN nothing changed.
+- **Connect at home** (the home address, while on the home Wi-Fi) used only the router's public address,
+  which the router loops back. On this router that path carried pings but no video at all (the phone kept
+  asking for keyframes, about 4 a second). The phone now also races the Mac it sees on the Wi-Fi and uses it,
+  and the host counts a session from its own public address as home (full quality).
+- The host log's `streaming to` line names the transport and source (`udp 1.2.3.4`, `wss …`), and a `path:`
+  line every 10 s gives what the phone reported: KB received, fragment loss, FEC repairs, frames shown/lost,
+  queuing delay, round trip and why it asked for keyframes.
+- **Mobile data: the bitrate no longer sticks at the floor.** Cellular delay swings by 60–220 ms with no
+  queue at all, and the rate controller took that for congestion even while the Mac sent 0.4 Mbit/s, so the
+  target sat at 1.5 Mbit/s and every screen change came through blurry and late. It now learns the path's
+  jitter while the sender is idle and counts only delay above it, and only while the sender uses at least half
+  its target. Loss still backs off as before.
+- **The pointer away from home.** The away picture (1600 px) is smaller than the Mac's screen, but the host
+  applied the phone's moves in the screen's points while the phone predicted them in the picture's. The
+  phone's pointer ran about 1.7× ahead, then snapped back with every report from the Mac, and was drawn 1.7×
+  too big. The host now scales the phone's moves up to the screen and sends the pointer's shape at the
+  picture's size, so both sides agree (shared `PointerSpace`, tested). The same applied at home in postures
+  whose picture is smaller than the Mac's screen. The host log says `pointer: picture is smaller than the
+  display, moves ×1.67` when it applies.
+- More in the host log: an `input:` line every 10 s (messages from the phone, actions posted, refused for
+  lack of Accessibility, dropped because someone was using the Mac) and, when the Mac's own keyboard or mouse
+  pauses the phone, a `local input:` line naming the event and its process (pid 0 is real hardware). The
+  guard also ignores events from the host's own process even without the Clamshell tag. The phone's console
+  says why the pointer is or isn't drawn (`# pointer: …`) and prints each decode failure with its status.
+- When a session's path moves between the LAN and the internet, the host restarts the stream with the matching
+  profile.
+- The host log gets a `stats:` line every 10 s (fps, Mbit/s and target, encode ms, keyframes, refinements,
+  drops), so a laggy session can be read afterwards.
+- **Touch on the picture is a trackpad in every posture** (laptop, book, flat, cover): drag moves the pointer
+  relatively, tap clicks, two fingers scroll or right-click. "Touch clicks on the picture" in the Layout menu
+  brings back direct touch, and it is now off by default (new setting key, so an old "on" doesn't carry over).
+  The trackpad under the keyboard (laptop, book) stays as it was.
+- **Pinch on the picture zooms the phone's view** (up to 5×) so small text is readable; the Mac doesn't change.
+  The point under your fingers stays put, moving them while pinching pans, and while zoomed the view follows
+  the Mac's pointer when it nears an edge. The pointer moves proportionally less while zoomed, so it stays as
+  precise on screen. Pinch back out to see the whole screen. On the trackpad strip a pinch still sends
+  ⌘= / ⌘− to the Mac app.
+- **Bigger keys, and the deck is a setting** (Layout › Keyboard & trackpad…, also on the connect screen):
+  key size (row height 36–64 pt, default 48 pt; 1.0.1's keyboard was capped at 260 pt, about 42 pt rows) with
+  larger labels, show or hide the keyboard and the trackpad strip, the strip's size, and in laptop posture the
+  strip below or beside the keyboard. Saved on the phone (`DeckSettings`); the old "lower half" choice carries
+  over. The Layout menu keeps a quick Trackpad strip switch.
+- **Book posture splits the deck at the fold.** The Mac's picture stays as it is, across both pages, and the
+  Mac's display no longer changes shape when you turn the Duo sideways (book uses the laptop display mode).
+  Below it the keyboard splits like a split MacBook keyboard (after 6, T, G, B and F6; each half has a space
+  bar, the arrows are on the right). Each half keeps MacBook-shaped keys at its page's outer edge, and the
+  trackpad strip, when shown, sits between the halves as one pad per page beside the fold, so it takes no
+  height from the picture (a first try stretched the keys across each page and put the strip underneath,
+  which left the picture small). fn, caps lock and sticky modifiers work across both halves. Nothing sits on
+  the fold, a touch that starts there is ignored, and a finger on each page still makes one two-finger gesture.
+- **Ready for anyone to build.** App icons for both apps (drawn by `tools/scripts/make-icons.swift`, also
+  `docs/images/icon.png`). `tools/scripts/configure.sh` finds your Apple team from its Apple Development
+  certificate and writes `Local.xcconfig`, and `release.sh` checks Xcode, xcodegen and the signing config
+  first and says what's missing. New README, a from-zero [SETUP](docs/SETUP.md) (including the Untrusted
+  Developer step, updating and uninstalling), [USAGE](docs/USAGE.md) and [DEVELOPMENT](docs/DEVELOPMENT.md).
+  Version 1.0.1 (3), and the apps now send their real version in `Hello` instead of a fixed "0.1.0". Two
+  Swift concurrency warnings are gone (the connect notification and the pairing digits callback). The
+  project is now under the [MIT License](LICENSE).
+
 ## 1.0.0: Everyday use, Arabic/English typing (2026-11-16)
 
 ### Added

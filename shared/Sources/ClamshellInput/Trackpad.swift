@@ -36,6 +36,9 @@ public enum TrackpadOutput: Equatable, Sendable {
     case scroll(dx: Double, dy: Double, phase: ScrollPhase, vx: Double, vy: Double)
     case gesture(GestureKind)
     case haptic(Haptic)
+    /// With `Settings.continuousZoom`: a pinch as it happens, for zooming the phone's own view. `factor` is the
+    /// change since the last one, (x, y) the fingers' centre and (dx, dy) how far it moved, in pad points.
+    case zoom(factor: Double, x: Double, y: Double, dx: Double, dy: Double)
 
     public enum Haptic: Equatable, Sendable { case click, dragStart, step }
 }
@@ -57,6 +60,8 @@ public struct TrackpadInterpreter: Sendable {
         public var tapSeconds = 0.25
         public var swipeDistance = 50.0
         public var switcherStep = 80.0
+        /// Pinch zooms the phone's view (`.zoom`, continuous, picked up sooner) instead of sending ⌘= / ⌘- steps.
+        public var continuousZoom = false
         public init() {}
     }
 
@@ -123,7 +128,7 @@ public struct TrackpadInterpreter: Sendable {
         case .scrolling:
             out.append(.scroll(dx: dx, dy: dy, phase: .changed, vx: 0, vy: 0))
         case .pinching:
-            pinch(points, into: &out)
+            pinch(points, c: c, moved: (dx, dy), into: &out)
         case .switcher:
             switcherOffset += dx
             while switcherOffset >= settings.switcherStep { switcherOffset -= settings.switcherStep; out.append(.gesture(.appSwitcherNext)); out.append(.haptic(.step)) }
@@ -168,10 +173,12 @@ public struct TrackpadInterpreter: Sendable {
             out.append(.move(dx: ax, dy: ay))
         case 2:
             let sp = spread(points)
-            if zoomRef > 0, abs(sp - zoomRef) > max(40, zoomRef * 0.25), hypot(tx, ty) < abs(sp - zoomRef) {
+            let stretch = abs(sp - zoomRef)
+            let threshold = settings.continuousZoom ? max(12, zoomRef * 0.08) : max(40, zoomRef * 0.25)
+            if zoomRef > 0, stretch > threshold, hypot(tx, ty) < stretch {
                 mode = .pinching
-                pinch(points, into: &out)
-            } else if hypot(tx, ty) >= settings.slop {
+                pinch(points, c: c, moved: (0, 0), into: &out)
+            } else if hypot(tx, ty) >= settings.slop, !(settings.continuousZoom && stretch >= hypot(tx, ty)) {
                 mode = .scrolling
                 out.append(.scroll(dx: tx, dy: ty, phase: .began, vx: 0, vy: 0))
             }
@@ -198,9 +205,15 @@ public struct TrackpadInterpreter: Sendable {
         }
     }
 
-    private mutating func pinch(_ points: [Int: (x: Double, y: Double)], into out: inout [TrackpadOutput]) {
+    private mutating func pinch(_ points: [Int: (x: Double, y: Double)], c: (x: Double, y: Double), moved: (Double, Double),
+                                into out: inout [TrackpadOutput]) {
         let sp = spread(points)
         guard zoomRef > 0 else { zoomRef = sp; return }
+        if settings.continuousZoom {
+            out.append(.zoom(factor: sp / zoomRef, x: c.x, y: c.y, dx: moved.0, dy: moved.1))
+            zoomRef = sp
+            return
+        }
         if sp > zoomRef * 1.25 { zoomRef = sp; out.append(.gesture(.zoomIn)) }
         else if sp < zoomRef / 1.25 { zoomRef = sp; out.append(.gesture(.zoomOut)) }
     }

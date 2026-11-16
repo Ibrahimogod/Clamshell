@@ -91,45 +91,76 @@ final class VideoLayerView: UIView {
     func stop() { link?.invalidate(); link = nil }
 
     @objc private func tick(_ link: CADisplayLink) {
-        drawCursor()
         if directTouch, touch.isPending { feed(lastPoints) }      // a finger held still: the 0.5 s right click
-        guard let renderer,
-              let pic = client.pipeline?.latest.take(), pic.frameId != lastFrameId else { return }
-        lastFrameId = pic.frameId
-        let presentNs = PhoneClock.ns(fromMediaTime: link.targetTimestamp)
-        if let value = BarcodeReader.read(pic.pixelBuffer) { client.recordBarcode(macMicros: value.timeMicros, presentNs: presentNs) }
-        if client.flashTestRunning, let level = StreamFlashReader.level(pic.pixelBuffer) {
-            client.recordStreamFlash(level: level, presentNs: presentNs)
+        guard let renderer else { return }
+        var pic = client.pipeline?.latest.take()
+        if pic?.frameId == lastFrameId { pic = nil }
+        if let pic {
+            lastFrameId = pic.frameId
+            let presentNs = PhoneClock.ns(fromMediaTime: link.targetTimestamp)
+            if let value = BarcodeReader.read(pic.pixelBuffer) { client.recordBarcode(macMicros: value.timeMicros, presentNs: presentNs) }
+            if client.flashTestRunning, let level = StreamFlashReader.level(pic.pixelBuffer) {
+                client.recordStreamFlash(level: level, presentNs: presentNs)
+            }
+            pixels = CGSize(width: CVPixelBufferGetWidth(pic.pixelBuffer), height: CVPixelBufferGetHeight(pic.pixelBuffer))
+            // The Mac reports the cursor in picture points (pixels / 2); a mirrored Mac screen keeps its own
+            // aspect, so take the size from the picture, not from the posture's mode.
+            let picturePoints = CGSize(width: pixels.width / 2, height: pixels.height / 2)
+            if let cursor = client.input?.cursor, cursor.displaySize != picturePoints { cursor.displaySize = picturePoints }
         }
+        // Laid out every frame, not only on a new picture: a pinch or the pointer moves the zoomed view on a
+        // still screen too.
+        layoutPicture()
+        drawCursor()
+        if let pic, renderer.draw(pic.pixelBuffer, on: metal) { client.presentedFrames += 1 }
+    }
 
-        let w = CVPixelBufferGetWidth(pic.pixelBuffer), h = CVPixelBufferGetHeight(pic.pixelBuffer)
-        // The Mac reports the cursor in picture points (pixels / 2); a mirrored Mac screen keeps its own
-        // aspect, so take the size from the picture, not from the posture's mode.
-        let picturePoints = CGSize(width: Double(w) / 2, height: Double(h) / 2)
-        if let cursor = client.input?.cursor, cursor.displaySize != picturePoints { cursor.displaySize = picturePoints }
+    /// The latest picture's size in pixels.
+    private var pixels = CGSize.zero
+
+    private func layoutPicture() {
+        guard pixels.width > 0, pixels.height > 0 else { return }
         let scale = window?.windowScene?.screen.nativeScale ?? traitCollection.displayScale
         // 1:1: the layer is exactly picture-pixels / native scale points, at the top, centred horizontally.
         // On a phone narrower than the picture (not the Duo's top half), fit it to the width instead.
-        var size = CGSize(width: CGFloat(w) / scale, height: CGFloat(h) / scale)
+        var size = CGSize(width: pixels.width / scale, height: pixels.height / scale)
         // Fit inside the view (the flat and book modes can be bigger than the area for them).
         let fit = min(bounds.width > 0 ? bounds.width / size.width : 1, bounds.height > 0 ? bounds.height / size.height : 1, 1)
-        if fit < 0.999 {
-            size = CGSize(width: size.width * fit, height: size.height * fit)
-            metal.minificationFilter = .linear
-        } else {
-            metal.minificationFilter = .nearest
-        }
+        if fit < 0.999 { size = CGSize(width: size.width * fit, height: size.height * fit) }
         let origin = CGPoint(x: max((bounds.width - size.width) / 2, 0), y: centered ? max((bounds.height - size.height) / 2, 0) : 0)
+        let fitted = CGRect(origin: origin, size: size)
+        let frame = client.pictureZoom.frame(fitted: fitted, in: bounds, cursor: cursorFraction)
+        let oneToOne = abs(frame.width - pixels.width / scale) < 0.5
+        let minFilter: CALayerContentsFilter = frame.width < pixels.width / scale - 0.5 ? .linear : .nearest
+        let magFilter: CALayerContentsFilter = oneToOne ? .nearest : .linear
+        guard frame != metal.frame || metal.drawableSize != pixels || metal.contentsScale != scale
+              || metal.minificationFilter != minFilter || metal.magnificationFilter != magFilter else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metal.contentsScale = scale
-        metal.frame = CGRect(origin: origin, size: size)
-        metal.drawableSize = CGSize(width: w, height: h)
+        metal.frame = frame
+        metal.drawableSize = pixels
+        metal.minificationFilter = minFilter
+        metal.magnificationFilter = magFilter
         CATransaction.commit()
-        if renderer.draw(pic.pixelBuffer, on: metal) { client.presentedFrames += 1 }
+    }
+
+    /// The Mac pointer as fractions of the picture, for the zoomed view to follow.
+    private var cursorFraction: CGPoint? {
+        guard let cursor = client.input?.cursor, cursor.active, cursor.visible,
+              cursor.displaySize.width > 0, cursor.displaySize.height > 0 else { return nil }
+        let p = cursor.drawPosition(now: CACurrentMediaTime())
+        return CGPoint(x: p.x / cursor.displaySize.width, y: p.y / cursor.displaySize.height)
     }
 
     private var cursorImageId: UInt64 = .max
+    private var cursorNote = ""
+    /// The phone's console: why the pointer is or isn't drawn, once per change.
+    private func note(_ s: String) {
+        guard s != cursorNote else { return }
+        cursorNote = s
+        print("# pointer: \(s)")
+    }
 
     // MARK: direct touch
 
@@ -188,8 +219,12 @@ final class VideoLayerView: UIView {
         guard let cursor = client.input?.cursor, cursor.active, cursor.visible, !metal.frame.isEmpty,
               let shape = cursor.currentShape else {
             if !cursorLayer.isHidden { cursorLayer.isHidden = true }
+            let c = client.input?.cursor
+            note(c == nil ? "no input" : c?.active != true ? "no position from the Mac yet" : c?.visible != true ? "off the streamed display"
+                 : metal.frame.isEmpty ? "no picture" : "shape \(c?.shapeId ?? 0) not received (have \(c?.shapes.count ?? 0))")
             return
         }
+        note("drawn, shape \(cursor.shapeId) \(Int(shape.size.width))×\(Int(shape.size.height)) pt in \(Int(cursor.displaySize.width))×\(Int(cursor.displaySize.height))")
         // Mac points → this view: the video layer shows the whole Mac display.
         let k = metal.frame.width / cursor.displaySize.width
         let p = cursor.drawPosition(now: CACurrentMediaTime())

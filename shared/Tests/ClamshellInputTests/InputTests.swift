@@ -285,6 +285,28 @@ struct TrackpadTests {
         #expect(out.contains(.gesture(.zoomIn)))
         #expect(!out.contains { if case .scroll = $0 { return true }; return false })
     }
+
+    /// On the picture a pinch zooms the phone's view: continuous, and caught before it turns into a scroll.
+    @Test func continuousPinchZoomsTheView() {
+        var settings = TrackpadInterpreter.Settings()
+        settings.continuousZoom = true
+        let out = run([(0, [1: (200, 200), 2: (260, 200)]), (0.03, [1: (192, 201), 2: (268, 201)]),
+                       (0.06, [1: (180, 202), 2: (280, 202)]), (0.1, [1: (160, 204), 2: (300, 204)]), (0.2, [:])], settings: settings)
+        let factors = out.compactMap { if case .zoom(let f, _, _, _, _) = $0 { return f }; return nil }
+        #expect(!factors.isEmpty)
+        #expect(abs(factors.reduce(1, *) - 140.0 / 60.0) < 0.01)          // the whole pinch, 60 → 140 pt apart
+        #expect(!out.contains { if case .scroll = $0 { return true }; return false })
+        #expect(!out.contains(.gesture(.zoomIn)))
+    }
+
+    @Test func continuousZoomStillScrolls() {
+        var settings = TrackpadInterpreter.Settings()
+        settings.continuousZoom = true
+        let out = run([(0, [1: (200, 200), 2: (260, 200)]), (0.05, [1: (200, 230), 2: (260, 231)]), (0.1, [1: (200, 260), 2: (260, 262)]), (0.2, [:])],
+                      settings: settings)
+        #expect(out.contains { if case .scroll = $0 { return true }; return false })
+        #expect(!out.contains { if case .zoom = $0 { return true }; return false })
+    }
 }
 
 @Suite("Bulk transfers")

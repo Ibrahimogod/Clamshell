@@ -3,6 +3,7 @@ import ClamshellInput
 import ClamshellWire
 import CoreGraphics
 import Foundation
+import os
 
 /// Posts the phone's keyboard, pointer, scroll and gestures as real macOS events (ADR-0013).
 ///
@@ -30,6 +31,11 @@ final class InputInjector: @unchecked Sendable {
     private var lastCursorReportNs: UInt64 = 0
     private var cursorDirty = false
     private(set) var shapeId: UInt64 = 0
+    /// Picture points (what the phone uses) ↔ the display's points.
+    var pointerSpace: PointerSpace {
+        let b = CGDisplayBounds(displayID)
+        return PointerSpace(pictureWidth: reportSize.width, pictureHeight: reportSize.height, displayWidth: b.width, displayHeight: b.height)
+    }
 
     init(displayID: CGDirectDisplayID, reportSize: CGSize, reportCursor: @escaping @Sendable (CursorPosition) -> Void) {
         self.displayID = displayID
@@ -83,9 +89,17 @@ final class InputInjector: @unchecked Sendable {
         let now = HostClock.nowNs()
         queue.async { [self] in
             let actions = receiver.receive(messages, nowNs: now)
-            guard Self.allowed else { return }
+            let allowed = Self.allowed
+            counts.withLock { $0.messages += messages.count; $0.actions += allowed ? actions.count : 0; $0.refused += allowed ? 0 : actions.count }
+            guard allowed else { return }
             for a in actions { post(a) }
         }
+    }
+
+    /// For the host log: input messages from the phone, actions posted, actions refused (no Accessibility).
+    private let counts = OSAllocatedUnfairLock(initialState: (messages: 0, actions: 0, refused: 0))
+    func takeCounts() -> (messages: Int, actions: Int, refused: Int) {
+        counts.withLock { c in defer { c = (0, 0, 0) }; return c }
     }
 
     func setShape(_ id: UInt64) { queue.async { [self] in shapeId = id; cursorDirty = true } }
@@ -118,7 +132,10 @@ final class InputInjector: @unchecked Sendable {
         case .media(let k, let down):
             media(k, down: down)
         case .move(let dx, let dy, let buttons):
-            move(to: current().applying(.init(translationX: dx, y: dy)), dx: dx, dy: dy, buttons: buttons)
+            // The phone moves its cursor in picture points; a shrunk picture (away, or a small posture) has
+            // fewer of them than the display, so scale the move up to the display's points.
+            let d = pointerSpace.displayDelta(dx: dx, dy: dy)
+            move(to: current().applying(.init(translationX: d.dx, y: d.dy)), dx: d.dx, dy: d.dy, buttons: buttons)
         case .moveTo(let x, let y, let buttons):
             let b = CGDisplayBounds(displayID)
             let p = CGPoint(x: b.minX + x * b.width, y: b.minY + y * b.height)

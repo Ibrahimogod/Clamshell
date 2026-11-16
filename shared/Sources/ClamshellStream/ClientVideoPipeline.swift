@@ -189,6 +189,7 @@ public final class ClientVideoPipeline: @unchecked Sendable {
                 stats.chroma = format.chroma
                 stats.hardwareDecoder = d.usingHardware
             } catch {
+                print("# decoder create failed: \(error)")
                 stats.decoderErrors += 1
                 askForKeyframe(.decoderError, force: true)
                 return
@@ -215,9 +216,12 @@ public final class ClientVideoPipeline: @unchecked Sendable {
                     let c = pic.decodeLatency.components
                     self.stats.lastDecodeMs = Double(c.seconds) * 1000 + Double(c.attoseconds) / 1e15
                 }
-            case .failure:
+            case .failure(let error):
                 self.queue.async {
                     self.stats.decoderErrors += 1
+                    if self.stats.decoderErrors <= 20 || self.stats.decoderErrors % 100 == 0 {
+                        print("# decode failed (\(self.stats.decoderErrors)): \(error) · frame \(id)\(flags.contains(.keyframe) ? " key" : "")\(flags.contains(.refinement) ? " refinement" : "") · \(frame.data.count) bytes")
+                    }
                     self.askForKeyframe(.decoderError, force: true)
                 }
             }

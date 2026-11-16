@@ -118,6 +118,7 @@ struct ConnectView: View {
                 LabeledContent("HEVC 4:4:4 decode", value: client.hevc444Text)
                 Toggle("Touch ID before connecting", isOn: $client.requireBiometrics)
                 Toggle("Play the Mac's sound", isOn: $client.sound)
+                NavigationLink("Keyboard & trackpad") { DeckSettingsView(deck: $client.deck) }
             }
         }
         .navigationTitle("Clamshell")
@@ -174,9 +175,10 @@ struct PairingSection: View {
 }
 
 struct StreamView: View {
-    let client: ClientController
+    @Bindable var client: ClientController
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showKeyboard = true
+    /// fn, caps lock and sticky modifiers, shared by the two halves of the book keyboard.
+    @State private var keyState = KeyboardState()
 
     var body: some View {
         GeometryReader { geo in
@@ -200,10 +202,13 @@ struct StreamView: View {
         return f.offsetBy(dx: -origin.x, dy: -origin.y)
     }
 
-    private func screen(direct: Bool, centered: Bool) -> some View {
+    /// The Mac's picture. Unless "Touch clicks on the picture" is on, it is also a trackpad: drag to move the
+    /// pointer from where it is, tap to click, two fingers to scroll or right-click, pinch to zoom the view.
+    private func screen(centered: Bool) -> some View {
         ZStack(alignment: .top) {
             Color.black
-            VideoSurface(client: client, directTouch: direct && client.input != nil, centered: centered)
+            VideoSurface(client: client, directTouch: client.directTouch && client.input != nil, centered: centered)
+            if !client.directTouch, let input = client.input { Trackpad(input: input, overlay: true, zoom: client.pictureZoom) }
             if let banner = client.hud.macBanner { BannerView(text: banner, locked: client.hud.macScreen == .locked) }
             if client.showHUD { VStack { Spacer(); HUDView(hud: client.hud).padding(.bottom, 6) } }
         }
@@ -216,47 +221,67 @@ struct StreamView: View {
         let top = horizontalFold ? max(fold?.minY ?? 0, 100) : min(geo.size.width * 667 / 939, geo.size.height * 0.6)
         let gap = horizontalFold ? fold?.height ?? 0 : 0
         return VStack(spacing: 0) {
-            screen(direct: false, centered: false).frame(height: top)
+            screen(centered: false).frame(height: top)
             Color(DeckStyle.base).frame(height: gap).accessibilityHidden(true)
-            SeamBar(client: client, showKeyboard: $showKeyboard)
-            lower(mode: client.deckMode)
+            SeamBar(client: client, showKeyboard: $client.deck.showKeyboard)
+            GeometryReader { lowerGeo in lower(lowerGeo.size) }
         }
     }
 
-    /// Book: the Mac on the left page, the deck on the right one.
+    /// Book: the Mac's picture stays as it is, across both pages. Below it the keyboard splits at the fold: each
+    /// half keeps MacBook-shaped keys at its page's outer edge, and the trackpad strip sits between the halves,
+    /// one pad per page beside the fold, so it costs the picture no height.
     private func book(_ geo: GeometryProxy, fold: CGRect?) -> some View {
         let verticalFold = fold.map { $0.height > $0.width } ?? false
-        let left = verticalFold ? fold?.minX ?? geo.size.width / 2 : geo.size.width / 2
-        let gap = verticalFold ? fold?.width ?? 0 : 0
-        return HStack(spacing: 0) {
-            screen(direct: client.directTouch, centered: true).frame(width: left)
-            Color(DeckStyle.base).frame(width: gap).accessibilityHidden(true)
-            VStack(spacing: 0) {
-                SeamBar(client: client, showKeyboard: $showKeyboard)
-                lower(mode: client.deckMode)
+        let gap = FoldGap(x: verticalFold ? fold?.minX ?? geo.size.width / 2 - 8 : geo.size.width / 2 - 8,
+                          width: verticalFold ? fold?.width ?? 16 : 16)
+        let deck = client.deck
+        let leftPage = gap.x, rightPage = geo.size.width - gap.x - gap.width
+        let leftKeys = deck.bookKeyboardWidth(page: leftPage, units: Double(DeckLayout.half(left: true).units))
+        let rightKeys = deck.bookKeyboardWidth(page: rightPage, units: Double(DeckLayout.half(left: false).units))
+        let keys = deck.keyboardHeight(limit: geo.size.height * 0.4)
+        return VStack(spacing: 0) {
+            screen(centered: true)
+            SeamBar(client: client, showKeyboard: $client.deck.showKeyboard)
+            if let input = client.input {
+                if deck.showKeyboard {
+                    HStack(spacing: 0) {
+                        KeyboardDeck(input: input, half: .left, state: keyState).frame(width: leftKeys)
+                        if deck.showTrackpad {
+                            // Between the halves: the pad's own coordinates start 6 pt after the left keys.
+                            Trackpad(input: input, fold: FoldGap(x: gap.x - leftKeys - 6, width: gap.width))
+                                .padding(6)
+                        } else {
+                            Color(DeckStyle.base).accessibilityHidden(true)
+                        }
+                        KeyboardDeck(input: input, half: .right, state: keyState).frame(width: rightKeys)
+                    }
+                    .frame(height: keys)
+                } else if deck.showTrackpad {
+                    Trackpad(input: input, fold: FoldGap(x: gap.x - 6, width: gap.width))
+                        .padding(6)
+                        .frame(height: deck.trackpadStripHeight(limit: geo.size.height * 0.4))
+                }
             }
         }
     }
 
-    /// Flat: one big screen. Touch clicks where you touch (or the picture is a trackpad), a small keyboard
+    /// Flat: one big screen that is a trackpad (or clicks where you touch), a small keyboard
     /// on demand, edge swipes for Spaces.
     private func flat(_ geo: GeometryProxy) -> some View {
         VStack(spacing: 0) {
-            ZStack {
-                screen(direct: client.directTouch, centered: true)
-                if !client.directTouch, let input = client.input { Trackpad(input: input, overlay: true) }
+            screen(centered: true)
+            if client.deck.showKeyboard, let input = client.input {
+                KeyboardDeck(input: input).frame(height: client.deck.keyboardHeight(limit: geo.size.height * 0.4))
             }
-            if showKeyboard, let input = client.input {
-                KeyboardDeck(input: input).frame(height: min(230, geo.size.height * 0.3))
-            }
-            SeamBar(client: client, showKeyboard: $showKeyboard)
+            SeamBar(client: client, showKeyboard: $client.deck.showKeyboard)
         }
     }
 
-    /// Closed: a glance at the Mac on the cover screen; touch still clicks.
+    /// Closed: a glance at the Mac on the cover screen, a trackpad like the others.
     private var cover: some View {
         ZStack(alignment: .topTrailing) {
-            screen(direct: true, centered: true)
+            screen(centered: true)
             Button(role: .destructive) { client.disconnect() } label: { Image(systemName: "xmark.circle.fill").font(.title2) }
                 .tint(.white).padding(10)
                 .accessibilityLabel("Disconnect")
@@ -264,26 +289,39 @@ struct StreamView: View {
         .ignoresSafeArea()
     }
 
+    /// Laptop, below the fold: the keyboard at its key size, the trackpad below it (or beside it) at its size.
     @ViewBuilder
-    private func lower(mode: DeckMode) -> some View {
+    private func lower(_ size: CGSize) -> some View {
+        let deck = client.deck
         if let input = client.input {
             Group {
-                switch mode {
-                case .deck:
-                    VStack(spacing: 6) {
-                        if showKeyboard { KeyboardDeck(input: input).frame(maxHeight: 260) }
-                        Trackpad(input: input).padding(.horizontal, 10)
-                    }
-                case .split:
+                if !deck.showKeyboard && !deck.showTrackpad {
+                    Text("Keyboard and trackpad are hidden. Turn them on in Layout › Keyboard & trackpad, or with ⌨ above.")
+                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if deck.padBesideKeyboard {
                     HStack(spacing: 6) {
-                        KeyboardDeck(input: input).frame(maxWidth: .infinity)
-                        Trackpad(input: input).frame(maxWidth: 220)
+                        if deck.showKeyboard {
+                            KeyboardDeck(input: input).frame(maxWidth: .infinity).frame(height: deck.keyboardHeight(limit: size.height - 6))
+                        }
+                        if deck.showTrackpad {
+                            Trackpad(input: input)
+                                .frame(width: deck.showKeyboard ? min(deck.trackpadSideWidth, size.width * 0.45) : nil)
+                                .frame(maxWidth: deck.showKeyboard ? nil : .infinity)
+                        }
                     }
                     .padding(.horizontal, 6)
-                case .pad:
-                    Trackpad(input: input).padding(10)
-                case .keys:
-                    KeyboardDeck(input: input)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                } else {
+                    VStack(spacing: 6) {
+                        if deck.showKeyboard {
+                            KeyboardDeck(input: input).frame(height: deck.keyboardHeight(limit: deck.showTrackpad ? size.height * 0.7 : size.height - 6))
+                        }
+                        if deck.showTrackpad {
+                            Trackpad(input: input).frame(width: max(0, (size.width - 20) * deck.trackpadWidthShare))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
             .padding(.bottom, 6)
@@ -294,9 +332,10 @@ struct StreamView: View {
     }
 }
 
-/// Posture pin, deck mode and touch mode (ADR-0012 overrides).
+/// Posture pin, deck settings and touch mode (ADR-0012 overrides).
 struct PostureMenu: View {
     @Bindable var client: ClientController
+    let openDeckSettings: () -> Void
 
     var body: some View {
         Menu {
@@ -306,12 +345,8 @@ struct PostureMenu: View {
                 Label("Book", systemImage: "book").tag(Posture?.some(.book))
                 Label("Flat", systemImage: "rectangle").tag(Posture?.some(.flat))
             }
-            Picker("Lower half", selection: $client.deckMode) {
-                Text("Keyboard + trackpad").tag(DeckMode.deck)
-                Text("Side by side").tag(DeckMode.split)
-                Text("Trackpad only").tag(DeckMode.pad)
-                Text("Keyboard only").tag(DeckMode.keys)
-            }
+            Toggle("Trackpad strip", isOn: $client.deck.showTrackpad)
+            Button("Keyboard & trackpad…", systemImage: "slider.horizontal.3", action: openDeckSettings)
             Toggle("Touch clicks on the picture", isOn: $client.directTouch)
             Toggle("Sound", isOn: $client.sound)
             if let hw = client.hardware, hw.keyboardConnected {
@@ -326,9 +361,10 @@ struct PostureMenu: View {
 
 /// The bar between the screen and the deck: path, HUD, clipboard, keyboard and disconnect.
 struct SeamBar: View {
-    let client: ClientController
+    @Bindable var client: ClientController
     @Binding var showKeyboard: Bool
     @State private var pickingFile = false
+    @State private var deckSettings = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -338,7 +374,7 @@ struct SeamBar: View {
                 .background(Color(DeckStyle.ember).opacity(0.25), in: Capsule())
             if let note = client.lastClipboardNote { Text(note).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
             Spacer()
-            PostureMenu(client: client)
+            PostureMenu(client: client) { deckSettings = true }
             Button { client.showHUD.toggle() } label: { Image(systemName: "gauge.with.dots.needle.33percent") }
                 .accessibilityLabel("Stream statistics")
             Button { client.sendClipboard() } label: { Image(systemName: "doc.on.clipboard") }
@@ -360,6 +396,61 @@ struct SeamBar: View {
         .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result { client.sendFile(url) }
         }
+        .sheet(isPresented: $deckSettings) {
+            NavigationStack {
+                DeckSettingsView(deck: $client.deck)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { deckSettings = false } } }
+            }
+            .presentationDetents([.medium, .large])
+        }
+    }
+}
+
+/// Layout › Keyboard & trackpad: the deck's sizes, saved on the phone. Changes apply at once.
+struct DeckSettingsView: View {
+    @Binding var deck: DeckSettings
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show the keyboard", isOn: $deck.showKeyboard)
+                VStack(alignment: .leading) {
+                    LabeledContent("Key size", value: "\(Int(deck.keyRow.rounded())) pt")
+                    Slider(value: $deck.keyRow, in: DeckSettings.keyRowRange, step: 2) {
+                        Text("Key size")
+                    } minimumValueLabel: { Image(systemName: "textformat.size.smaller") } maximumValueLabel: { Image(systemName: "textformat.size.larger") }
+                }
+                .disabled(!deck.showKeyboard)
+            } header: {
+                Text("Keyboard")
+            } footer: {
+                Text("The height of one row of keys. Bigger keys leave less room for the trackpad strip, and in book posture for the Mac's picture.")
+            }
+            Section {
+                Toggle("Show the trackpad strip", isOn: $deck.showTrackpad)
+                VStack(alignment: .leading) {
+                    LabeledContent("Size", value: "\(Int((deck.trackpadSize * 100).rounded())) %")
+                    Slider(value: $deck.trackpadSize, in: 0...1, step: 0.05) {
+                        Text("Trackpad size")
+                    } minimumValueLabel: { Image(systemName: "rectangle.compress.vertical") } maximumValueLabel: { Image(systemName: "rectangle.expand.vertical") }
+                }
+                .disabled(!deck.showTrackpad)
+                Picker("In laptop posture", selection: $deck.padBesideKeyboard) {
+                    Text("Below the keyboard").tag(false)
+                    Text("Beside the keyboard").tag(true)
+                }
+                .disabled(!deck.showTrackpad)
+            } header: {
+                Text("Trackpad strip")
+            } footer: {
+                Text("The Mac's picture is a trackpad too, so the strip is optional. Laptop: the strip fills the space under the keyboard and its size sets its width. Book: the keyboard splits at the fold with the strip between its halves, one pad per page, and the size sets how much of each page the pad takes. Flat shows no strip.")
+            }
+            Section {
+                Button("Reset to defaults") { deck = DeckSettings() }
+            }
+        }
+        .navigationTitle("Keyboard & trackpad")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

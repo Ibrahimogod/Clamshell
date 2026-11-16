@@ -30,7 +30,9 @@ public struct DelayTracker: Sendable {
 /// Mac side: picks the encoder bitrate and the FEC strength from `ReceiverReport`s.
 ///
 /// - Queuing delay or heavy loss: back off multiplicatively, at most once per `backoffInterval`.
-///   Thresholds leave room for jitter: cellular and busy Wi-Fi add 10–25 ms of it with no queue at all.
+///   Thresholds leave room for jitter: busy Wi-Fi adds 10–25 ms of it with no queue at all, and cellular
+///   much more, so delay counts only above the jitter learned while the sender was idle (`jitterMs`), and
+///   not at all while the sender uses under half its target (a queue it can't be filling).
 /// - Start-up (until the first backoff): +25% every half `increaseInterval`, so a LAN reaches the ceiling
 ///   from a cautious start in about 2 s, while a 4 Mbit/s hotel link is never hit with 20 Mbit/s.
 /// - Then a clean path probes upward by 8% (at least 250 kbit/s) every `increaseInterval`, but only while the
@@ -65,6 +67,9 @@ public struct BitrateController: Sendable {
     public private(set) var inStartup = true
     public private(set) var pacingCap: Int?
     private var lastCapGrowNs: UInt64 = 0
+    /// The path's own delay noise in ms: cellular scheduling adds 50–200 ms swings with no queue at all. It is
+    /// learned while the Mac sends well under its target (so the delay can't be its own), at most 150 ms.
+    public private(set) var jitterMs = 0.0
 
     public init(start: Int, min: Int = 1_000_000, max: Int, backoffIntervalNs: UInt64 = 300_000_000,
                 increaseIntervalNs: UInt64 = 500_000_000) {
@@ -90,6 +95,13 @@ public struct BitrateController: Sendable {
     public mutating func update(nowNs: UInt64, loss: Double, framesLost: Int, queuingDelayMs: Double, sentBitrate: Int) -> Decision {
         lossEWMA = lossEWMA * 0.8 + loss * 0.2
         updateFEC(nowNs: nowNs)
+        // Sending under half the target can't fill a queue: delay then is the path's noise, not congestion.
+        let appLimited = Double(sentBitrate) < 0.5 * Double(bitrate)
+        if appLimited, loss < 0.02 {
+            let d = Swift.min(queuingDelayMs, 150)
+            jitterMs += (d > jitterMs ? 0.2 : 0.05) * (d - jitterMs)
+        }
+        let queuingDelayMs = appLimited ? 0 : Swift.max(0, queuingDelayMs - jitterMs)
 
         let canBackOff = nowNs >= lastBackoffNs + backoffIntervalNs
         let interval = inStartup ? increaseIntervalNs / 2 : increaseIntervalNs
