@@ -478,7 +478,7 @@ final class ClientController {
             let wanted = PostureModel.mode(for: posture.display)
             let modes = [wanted] + [DisplayMode.laptop, .flat, .book, .cover].filter { $0 != wanted }
             let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: caps, displayModes: modes, maxFps: 120,
-                              deviceName: UIDevice.current.name)
+                              deviceName: UIDevice.current.name, connectionId: UInt64.random(in: 1...UInt64.max))
             // Race the paths (ADR-0002): LAN (Bonjour), home UDP, then TLS + WebSocket on TCP, 150 ms apart.
             var candidates: [PathRacer.Candidate] = []
             let isManual = host.name == manualAddress

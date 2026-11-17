@@ -124,6 +124,14 @@ struct MessageTests {
         #expect(try Hello(h.message) == h)
     }
 
+    /// 1.7: the connection id survives the wire, and a Hello without one (an older phone) still decodes.
+    @Test func helloConnectionId() throws {
+        var h = Self.phoneHello
+        h.connectionId = 0xFEED_FACE_CAFE_BEEF
+        #expect(try Hello(h.message).connectionId == 0xFEED_FACE_CAFE_BEEF)
+        #expect(try Hello(Self.phoneHello.message).connectionId == nil)
+    }
+
     @Test func helloForwardCompatible() throws {
         // A future minor version adds a non-critical field: today's decoder still accepts it.
         var body = Self.phoneHello.encodeBody()

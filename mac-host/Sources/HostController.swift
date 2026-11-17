@@ -808,7 +808,7 @@ final class StreamSession {
         let pipeline = try HostVideoPipeline(config: cfg, chroma: use444 ? .yuv444 : .yuv420,
                                              refinement: remote ? Self.remoteRefinement : RefinementScheduler.defaultStages,
                                              sessionOverhead: SecureSession.overhead, maxUnsentFrames: 2,
-                                             continuing: continuing) { payloads, id, key in
+                                             continuing: continuing, keyframeBitrateCeiling: ceiling) { payloads, id, key in
             outbox.yield(OutFrame(payloads: payloads, frameId: id, isKeyframe: key))
         }
         self.pipeline = pipeline

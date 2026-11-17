@@ -22,7 +22,11 @@ public struct SharedPixelBuffer: @unchecked Sendable {
 ///   keyframe interval (the floor given at init, raised to 3 × the client's RTT, at most 500 ms): on a lossy
 ///   path a keyframe is the frame most likely to be lost, and answering every request with another one
 ///   before the last one could even arrive is how a stream locks up;
-/// - bitrate and FEC strength follow `setRate` (the Mac's `BitrateController`).
+/// - bitrate and FEC strength follow `setRate` (the Mac's `BitrateController`);
+/// - **keyframe boost**: a keyframe is encoded at `keyframeBitrate` and the target is restored right after.
+///   With low-latency rate control the encoder otherwise pays a keyframe back by dropping the frames after it
+///   (19–33 at 2670×1734 and 4 Mbit/s on the M5, a 0.25–0.4 s freeze), and the target often sits that low
+///   on a static desktop.
 /// All state lives on one serial queue; encoder callbacks hop back onto it.
 public final class HostVideoPipeline: @unchecked Sendable {
     public struct Stats: Sendable, Equatable {
@@ -84,6 +88,8 @@ public final class HostVideoPipeline: @unchecked Sendable {
     private var parityGroup = 0
     private var duplicateWindow: Duration = .milliseconds(150)
     private var capLowered = false
+    private let keyframeBitrateCeiling: Int?
+    private var boosted = false
     private var frameId: UInt32 = 0
     private var lastKeyframe: (frameId: UInt32, at: ContinuousClock.Instant)?
     private var generation: UInt16 = 0
@@ -97,8 +103,9 @@ public final class HostVideoPipeline: @unchecked Sendable {
     public init(config: EncoderConfig, chroma: ChromaFormat = .yuv420, refinement: [RefinementScheduler.Stage] = RefinementScheduler.defaultStages,
                 datagram: Int = 1200, sessionOverhead: Int, minKeyframeInterval: Duration = .milliseconds(100),
                 maxUnsentFrames: Int? = nil, continuing: (frameId: UInt32, generation: UInt16)? = nil,
-                output: @escaping Output) throws {
+                keyframeBitrateCeiling: Int? = nil, output: @escaping Output) throws {
         self.config = config
+        self.keyframeBitrateCeiling = keyframeBitrateCeiling
         if let c = continuing { frameId = c.frameId; generation = c.generation }
         self.maxUnsentFrames = maxUnsentFrames.map { max(1, $0) }
         self.minKeyframeInterval = minKeyframeInterval
@@ -179,6 +186,14 @@ public final class HostVideoPipeline: @unchecked Sendable {
 
     public var currentStats: Stats { queue.sync { stats } }
 
+    /// The bitrate a keyframe is encoded at: 4 × the target, and at least 7.5 bits per pixel per second
+    /// (enough on the M5 for a keyframe to fit without dropping the frames after it: 25 Mbit/s at 2670×1734
+    /// 4:4:4, 12 Mbit/s at 1600×1038 4:2:0), never above `ceiling` and never below the target.
+    public static func keyframeBitrate(target: Int, width: Int, height: Int, ceiling: Int) -> Int {
+        let wanted = max(4 * target, Int(7.5 * Double(width * height)))
+        return max(target, min(ceiling, wanted))
+    }
+
     /// A keyframe may go out now: none sent yet, or the last one is `minKeyframeInterval` old.
     private var keyframeAllowed: Bool {
         guard let k = lastKeyframe else { return true }
@@ -257,6 +272,10 @@ public final class HostVideoPipeline: @unchecked Sendable {
         inFlight = true
         let key = keyframeRequested && keyframeAllowed
         if key { keyframeRequested = false }
+        if key, let ceiling = keyframeBitrateCeiling {
+            let b = Self.keyframeBitrate(target: stats.targetBitrate, width: config.width, height: config.height, ceiling: ceiling)
+            if b > stats.targetBitrate, encoder.setAverageBitrate(b) { boosted = true }
+        }
         // Encoder timestamps must strictly increase, also for re-encodes of the same picture.
         let elapsed = (ContinuousClock.now - epoch).components
         let pts = UInt64(elapsed.seconds) * 1_000_000_000 + UInt64(elapsed.attoseconds / 1_000_000_000) + tag
@@ -268,6 +287,7 @@ public final class HostVideoPipeline: @unchecked Sendable {
 
     private func encoded(_ result: Result<EncodedFrame, VideoError>, tag: UInt64, wasKeyRequest: Bool) {
         inFlight = false
+        if boosted { boosted = false; encoder.setAverageBitrate(stats.targetBitrate) }
         let m = meta.removeValue(forKey: tag)
         switch result {
         case .failure(let error):

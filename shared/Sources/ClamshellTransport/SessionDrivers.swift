@@ -272,12 +272,24 @@ public actor HostSessionServer {
         if !wasConfirmed {
             let previous = current[key]
             current[key] = idx
-            if let previous, previous != idx { /* rekey: old session keeps decrypting until it expires */ } else {
+            if let previous, previous != idx, Self.isRekey(old: sessions[previous]?.hello, new: live.hello) {
+                // Rekey: the old session keeps decrypting until it expires.
+            } else {
+                // A new connection from this phone (or its first): the old one, if any, is gone on the phone,
+                // and the host must start afresh (input numbering, cursor shape, stream) instead of carrying on.
+                if let previous, previous != idx { sessions[previous] = nil }
                 continuation.yield(.peerConnected(peerKey: key, hello: live.hello, negotiation: live.negotiation, knownPeer: live.known))
             }
         }
         guard let messages = try? InnerMessage.decodeAll(payload), !messages.isEmpty else { return }
         continuation.yield(.messages(peerKey: key, messages))
+    }
+
+    /// A handshake from a phone that already has a session is a rekey of it when it carries the same
+    /// connection id (1.7). Phones before 1.7 send none, and every such handshake counts as a rekey, as before.
+    static func isRekey(old: Hello?, new: Hello) -> Bool {
+        guard let id = new.connectionId else { return old?.connectionId == nil }
+        return old?.connectionId == id
     }
 
     private func expireSessions() {

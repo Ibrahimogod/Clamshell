@@ -136,6 +136,40 @@ struct LoopbackTests {
         await server.stop()
     }
 
+    /// The phone reconnects (the app relaunched, the network changed) before the Mac noticed the old connection
+    /// died. A new connection id is a new session for the host; before 1.7 it looked like a rekey, so the host
+    /// kept the old input numbering (and dropped the phone's new input as duplicates) and never re-sent the
+    /// cursor shape, which left the phone with no pointer.
+    @Test func reconnectIsANewSessionNotARekey() async throws {
+        let server = HostSessionServer(responder: HostResponder(identity: mac, developmentPSK: psk), hello: macHello)
+        let port = try await server.start(port: nil, bonjourName: nil)
+        let events = log(server.events)
+        let peer = PeerConfig(publicKey: mac.publicKey, psk: psk, name: "Mac")
+        var first = phoneHello; first.connectionId = 1
+        var second = phoneHello; second.connectionId = 2
+        let a = ClientSessionConnection(udp: UDPClient(host: "127.0.0.1", port: port), identity: phone, server: peer, hello: first)
+        _ = try await a.connect(timeout: .seconds(3))
+        // No close: the old connection just stops, as when iOS suspends the app.
+        let b = ClientSessionConnection(udp: UDPClient(host: "127.0.0.1", port: port), identity: phone, server: peer, hello: second)
+        _ = try await b.connect(timeout: .seconds(3))
+        let fresh = await events.first { if case .peerConnected(_, let h, _, _) = $0 { h.connectionId == 2 } else { false } }
+        #expect(fresh != nil, "the reconnect must start a new session")
+        await a.close(); await b.close()
+        await server.stop()
+    }
+
+    /// Same connection id (a rekey), or phones without one: the running session carries on, as before 1.7.
+    @Test func rekeyKeepsTheSession() {
+        var h = phoneHello
+        #expect(HostSessionServer.isRekey(old: h, new: h))                   // no ids: an older phone
+        h.connectionId = 7
+        var other = h; other.connectionId = 8
+        #expect(HostSessionServer.isRekey(old: h, new: h))
+        #expect(!HostSessionServer.isRekey(old: h, new: other))
+        #expect(!HostSessionServer.isRekey(old: nil, new: h))                // the old session already expired
+        #expect(!HostSessionServer.isRekey(old: phoneHello, new: h))         // an updated phone after an old one
+    }
+
     @Test func wrongPSKTimesOut() async throws {
         let server = HostSessionServer(responder: HostResponder(identity: mac, developmentPSK: psk), hello: macHello)
         let port = try await server.start(port: nil, bonjourName: nil)

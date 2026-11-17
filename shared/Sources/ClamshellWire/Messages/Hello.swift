@@ -79,7 +79,8 @@ public struct Hello: WireMessage {
         static let displayMode: UInt64 = 6
         static let maxFps: UInt64 = 7
         static let deviceName: UInt64 = 8
-        static let all: Set<UInt64> = [protoMajor, protoMinor, appVersion, build, capabilities, displayMode, maxFps, deviceName]
+        static let connectionId: UInt64 = 9
+        static let all: Set<UInt64> = [protoMajor, protoMinor, appVersion, build, capabilities, displayMode, maxFps, deviceName, connectionId]
     }
 
     public var protoMajor: UInt16
@@ -90,10 +91,13 @@ public struct Hello: WireMessage {
     public var displayModes: [DisplayMode]
     public var maxFps: UInt16
     public var deviceName: String
+    /// 1.7: a random number the phone picks for each connection and keeps across its rekeys, so the Mac can
+    /// tell a reconnect (start the session afresh) from a rekey of the running one. nil from older phones.
+    public var connectionId: UInt64?
 
     public init(protoMajor: UInt16 = ProtocolVersion.major, protoMinor: UInt16 = ProtocolVersion.minor,
                 appVersion: String, build: UInt32, capabilities: Capabilities,
-                displayModes: [DisplayMode] = [], maxFps: UInt16 = 120, deviceName: String) {
+                displayModes: [DisplayMode] = [], maxFps: UInt16 = 120, deviceName: String, connectionId: UInt64? = nil) {
         self.protoMajor = protoMajor
         self.protoMinor = protoMinor
         self.appVersion = appVersion
@@ -102,6 +106,7 @@ public struct Hello: WireMessage {
         self.displayModes = displayModes
         self.maxFps = maxFps
         self.deviceName = deviceName
+        self.connectionId = connectionId
     }
 
     public func encodeBody() -> [UInt8] {
@@ -114,6 +119,7 @@ public struct Hello: WireMessage {
         for m in displayModes { t.bytes(Tag.displayMode, m.encode()) }
         t.uint(Tag.maxFps, UInt64(maxFps))
         t.string(Tag.deviceName, deviceName)
+        if let connectionId { t.uint(Tag.connectionId, connectionId) }
         return t.bytes
     }
 
@@ -127,6 +133,7 @@ public struct Hello: WireMessage {
         displayModes = try t.all(Tag.displayMode).map(DisplayMode.init(encoded:))
         maxFps = try (t.optionalUInt(Tag.maxFps) ?? 60).narrowed(to: UInt16.self, field: "maxFps")
         deviceName = try t.optionalString(Tag.deviceName) ?? ""
+        connectionId = try t.optionalUInt(Tag.connectionId)
     }
 }
 

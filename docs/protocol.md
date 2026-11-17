@@ -161,3 +161,23 @@ enabled keyboard input source (🌐 tapped alone). It is never a key, and the Ma
 that page and on any page other than 7 (keyboard) and 12 (consumer). The phone sends it only to a 1.6 Mac (one
 that has sent a KeyboardLayout). Until another key goes down, a held 🌐 is not sent as fn, so a tap never
 reaches the Mac as a bare fn press.
+
+## Protocol 1.7 (reconnects)
+
+| Hello tag | Field | Type | Meaning |
+|---|---|---|---|
+| 9 | connectionId | uint64, optional | Random, non-zero, fresh for each connection the phone opens; the same across its rekeys |
+
+The Mac keys sessions by the phone's static key. When a new handshake from a phone it already has a session
+with completes, it compares the two Hellos' connectionId:
+
+- **Same id: a rekey.** The old session keeps decrypting until it expires, and the stream, input sequence and
+  cursor state carry on.
+- **Different id (or only one side has one): a new connection.** The old session is dropped and the Mac
+  starts afresh as for a first connect: a new stream, a new input sequence and the current pointer shape.
+
+Before 1.7 the Mac took every second handshake from a phone for a rekey. After the phone dropped off Wi-Fi
+and connected again before the old session timed out, the Mac kept the old session's input state: the new
+connection's input (sequence numbers starting at 0 again) was dropped as already seen and the pointer shape
+was never re-sent, so the pointer vanished and input did nothing until the old session expired. Two pre-1.7
+peers (no id on either side) keep the old behaviour.

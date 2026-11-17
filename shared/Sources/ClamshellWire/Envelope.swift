@@ -2,7 +2,7 @@
 /// bump `major` only for incompatible ones (and give old peers a clean `Incompatible`).
 public enum ProtocolVersion {
     public static let major: UInt16 = 1
-    public static let minor: UInt16 = 6
+    public static let minor: UInt16 = 7
 }
 
 /// First byte of every packet on every path (outer layer, ADR-0011 §1).

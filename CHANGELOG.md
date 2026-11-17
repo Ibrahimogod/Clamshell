@@ -2,6 +2,22 @@
 
 All notable changes per milestone. Dates are 2026.
 
+## 1.0.2: The pointer after reconnects, no freezes after keyframes (2026-11-17)
+
+- **The pointer vanished after a reconnect.** When the phone dropped off the Wi-Fi and connected again before
+  the Mac had timed out its old session, the Mac took the new handshake for a rekey of the old one. It kept the
+  old input state, so the new connection's input (numbered from 0 again) was thrown away as already seen and
+  the pointer's shape was never sent: no pointer and no clicks until the old session expired, minutes later.
+  The phone now sends a fresh random connection id in its Hello (protocol 1.7, Hello tag 9); a different id
+  is a new connection and the Mac starts afresh. A real rekey keeps the id. Tested with two connections from
+  one phone, the first never closed.
+- **Frame drops after keyframes.** With low-latency rate control, VideoToolbox pays for a keyframe by dropping
+  the frames after it when the target is low (the LAN target sits at 2–5 Mbit/s on a quiet desktop). At
+  4 Mbit/s and 2670×1734 4:4:4 that was 19–33 frames, a 0.3–0.5 s freeze each time the phone asked for a
+  keyframe; away from home at 3 Mbit/s, 11–23. The host now raises the encoder's average bitrate for the
+  keyframe only (4× the target, at least 7.5 bits per pixel per second, capped at the session's ceiling) and
+  restores it on the next frame. A real-encoder test shows 0 drops at both sizes, against 76 without it.
+
 ## 1.0.1: Smoother away from home, the picture is a trackpad (2026-11-16)
 
 - **Away from home** (the session isn't on the local network) the host streams a lighter profile: at most
