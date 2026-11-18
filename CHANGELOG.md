@@ -2,6 +2,13 @@
 
 All notable changes per milestone. Dates are 2026.
 
+## Unreleased
+
+- `tools/scripts/release.sh` installs on a phone named with `CLAMSHELL_DEVICE` even when devicectl lists it
+  as disconnected. devicectl shows no capabilities for such a phone, so the old check skipped it.
+- The script now prints the earliest expiry of the app's and the widget's provisioning profiles, since the
+  earlier one decides when the app stops opening.
+
 ## 1.1.0: Microphone, files to the phone, one window, battery saver, several Macs (2026-11-18)
 
 Protocol 1.8, additive: 1.0 phones and Macs still work together, without the new features.

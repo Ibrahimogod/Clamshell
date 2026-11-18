@@ -46,7 +46,11 @@ step "Building the iPhone app (Release)"
 build -project "$ROOT/ios-client/Clamshell.xcodeproj" -scheme Clamshell -configuration Release \
       -destination 'generic/platform=iOS' -derivedDataPath "$ROOT/ios-client/build/release"
 IPA_APP="$ROOT/ios-client/build/release/Build/Products/Release-iphoneos/Clamshell.app"
-EXPIRES=$(security cms -D -i "$IPA_APP/embedded.mobileprovision" 2>/dev/null | plutil -extract ExpirationDate raw - 2>/dev/null || echo "?")
+# The app and its widget each carry a profile; the earliest one decides when the app stops opening.
+EXPIRES=$(for p in "$IPA_APP"/embedded.mobileprovision "$IPA_APP"/PlugIns/*.appex/embedded.mobileprovision; do
+    [[ -f "$p" ]] && security cms -D -i "$p" 2>/dev/null | plutil -extract ExpirationDate raw - 2>/dev/null
+done | sort | head -1)
+EXPIRES=${EXPIRES:-?}
 echo "app: $IPA_APP"
 echo "provisioning profile expires: $EXPIRES (after that the app won't open until you run this again)"
 
@@ -68,10 +72,11 @@ d=json.load(open(sys.argv[1]))["result"]["devices"]
 want=os.environ.get("CLAMSHELL_DEVICE","")
 def caps(x): return {f["featureIdentifier"] for f in x.get("capabilities",[])}
 # A named phone is used even when it reports "disconnected": that only means no tunnel is open yet, and
-# the install opens one. Otherwise only phones with a live connection.
-ok=[x for x in d if "com.apple.coredevice.feature.installapp" in caps(x) and x.get("connectionProperties",{}).get("pairingState")=="paired"]
+# the install opens one. devicectl lists no capabilities for such a phone, so only its pairing is checked.
+# Otherwise only phones with a live connection that can take an app.
+ok=[x for x in d if x.get("connectionProperties",{}).get("pairingState")=="paired"]
 if want: ok=[x for x in ok if want in (x["hardwareProperties"].get("udid",""), x.get("deviceProperties",{}).get("name",""))]
-else: ok=[x for x in ok if x.get("connectionProperties",{}).get("tunnelState")=="connected"]
+else: ok=[x for x in ok if x.get("connectionProperties",{}).get("tunnelState")=="connected" and "com.apple.coredevice.feature.installapp" in caps(x)]
 ok.sort(key=lambda x: x["hardwareProperties"].get("productType")!="iPhone19,4")   # an iPhone Duo first
 for x in ok: print("  found:", x.get("deviceProperties",{}).get("name","?"), x["hardwareProperties"].get("productType"), file=sys.stderr)
 print(ok[0]["hardwareProperties"]["udid"] if ok else "")' "$DEVICES")
