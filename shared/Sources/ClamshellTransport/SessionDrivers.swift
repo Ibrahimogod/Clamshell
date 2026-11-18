@@ -41,7 +41,12 @@ public actor HostSessionServer {
         var hello: Hello
         var negotiation: Negotiation
         var known: Bool
+        /// Last authentic packet from a local-network address (the phone's LAN path).
+        var lastLocal: ContinuousClock.Instant?
     }
+
+    /// While the phone is heard on the LAN this recently, packets on other paths don't move its replies off it.
+    static let localStickiness: Duration = .milliseconds(500)
 
     /// A connected phone pings at least once a second, so this much silence means it's gone (app killed, out of
     /// coverage). Without it the Mac would keep streaming into nothing until the session keys expire (180 s).
@@ -265,7 +270,16 @@ public actor HostSessionServer {
         let wasConfirmed = live.session.isConfirmed
         let payload: [UInt8]
         do { payload = try live.session.open(d.bytes, now: .now) } catch { droppedPackets += 1; return }
-        live.remote = d.from                          // roaming: follow the latest authentic address
+        // Roaming: follow the latest authentic address, except off a LAN address that's still in use. A phone
+        // that connected by the home address is heard on the LAN and through the router at once while its paths
+        // race or probe, and following each packet bounced the video between the two (reordered → keyframes).
+        let now = ContinuousClock.now
+        if d.from.isLocalNetwork {
+            live.lastLocal = now
+            live.remote = d.from
+        } else if !live.remote.isLocalNetwork || live.lastLocal.map({ now - $0 > Self.localStickiness }) ?? true {
+            live.remote = d.from
+        }
         sessions[idx] = live
         let key = live.session.peerStaticKey
         lastHeard[key] = .now

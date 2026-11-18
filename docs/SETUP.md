@@ -41,14 +41,17 @@ tools/scripts/configure.sh
 
 It finds your team ID from the Apple Development certificate you just made and writes
 `mac-host/Config/Local.xcconfig`, which both apps build with (gitignored). The apps get the bundle IDs
-`dev.<your user name>.clamshell.host` and `.client`. To choose them yourself, or if you have several teams:
+`dev.<your user name>.clamshell.host`, `.client` and `.client.widget` (the phone's widget). To choose them
+yourself, or if you have several teams:
 
 ```bash
 tools/scripts/configure.sh <TEAM_ID> com.yourname.clamshell
 ```
 
 (Your team ID is also at developer.apple.com › Account › Membership details. If Xcode later says a bundle ID
-"is not available", someone else has it: run `configure.sh --force <TEAM_ID> <another prefix>`.)
+"is not available", someone else has it: run `configure.sh --force <TEAM_ID> <another prefix>`. A free Apple
+Account can register at most 10 App IDs in 7 days, and Clamshell uses three, so avoid changing the prefix
+again and again.)
 
 > **Why a team and not ad-hoc signing:** with an ad-hoc signature every build is a new app to macOS, so the
 > Screen Recording and Accessibility grants stop applying and the Keychain asks again on each launch. With
@@ -85,6 +88,18 @@ click it for the menu.
    then the phone shows the picture but its keys and trackpad do nothing.
 4. **Notifications:** allow them to get a notice whenever a phone connects.
 5. **Open at login** in the menu, if you want the host always running.
+6. **The phone's microphone (optional):** to use the phone as the Mac's microphone, install the Clamshell
+   Microphone driver. It goes into `/Library/Audio/Plug-Ins/HAL`, which needs your password, so run it
+   yourself in Terminal:
+
+   ```bash
+   tools/scripts/install-microphone.sh
+   ```
+
+   Sound on the Mac stops for a second while Core Audio restarts. Then **Clamshell Microphone** is listed in
+   System Settings › Sound › Input, and the host menu says it's installed. Run it again after updating if the
+   changelog says the driver changed. `tools/scripts/test-microphone-driver.sh` checks the built driver
+   without installing it.
 
 If you rebuild later and a menu item asks for a permission again, remove the old ClamshellHost entry in that
 System Settings list with − and add the new one.
@@ -147,7 +162,8 @@ git pull && tools/scripts/release.sh
 ```
 
 With a **free** Apple Account the phone app's provisioning profile lasts **7 days**. The script prints when it
-expires, and after that the app won't open until you run the script again. A paid Apple Developer Program
+expires, and after that the app won't open until you run the script again. The app warns 3 days ahead and
+sends a reminder the day before, and the Mac's menu shows the date for each phone. A paid Apple Developer Program
 membership makes it a year, and also allows Developer ID signing and notarization, which you need only to
 give the Mac app to other people (see [app-store.md](app-store.md)).
 
@@ -158,7 +174,8 @@ give the Mac app to other people (see [app-store.md](app-store.md)).
   `/Applications/ClamshellHost.app`. Remove ClamshellHost from System Settings › Privacy & Security (Screen
   & System Audio Recording, Accessibility / Device Control). The host's identity and pairings are in the
   login Keychain under `dev.clamshell.host` (Keychain Access › search "clamshell"); its settings are
-  `defaults delete <your prefix>.host`; its log is `~/Library/Logs/Clamshell`.
+  `defaults delete <your prefix>.host`; its log is `~/Library/Logs/Clamshell`. If you installed the
+  microphone driver: `tools/scripts/install-microphone.sh --uninstall`.
 
 ## 9. Troubleshooting
 
@@ -177,6 +194,10 @@ give the Mac app to other people (see [app-store.md](app-store.md)).
 | "This phone's key could not be read from the Keychain" | The app was built without your team: check `mac-host/Config/Local.xcconfig`. |
 | Away from home doesn't connect | Port forwards (§6), the address in **Away from home**, and **Check connection** on the phone. CGNAT (a 100.64–100.127 address) can't work. |
 | Text soft while scrolling, sharp a moment later | Expected: the refinement pass sharpens the picture once it's still. |
+| "Maximum App ID limit reached" (free account) | 10 new App IDs per 7 days: wait, or keep the prefix you already used. |
+| Clamshell Microphone missing from Sound › Input | Run `tools/scripts/install-microphone.sh` (§4 step 6); if still missing, log out and back in. |
+| The phone's mic is silent in an app | The app's input must be **Clamshell Microphone**, and the mic button in the phone's bar must be on. |
+| "Send to iPhone with Clamshell" missing from Services | Log out and back in once after installing the host, or run `/System/Library/CoreServices/pbs -update`. |
 
 **Logs.** The host writes `~/Library/Logs/Clamshell/host.log`. Every 10 s while streaming it adds a
 `stats:` line (fps, bitrate, encode time, drops), a `path:` line (what the phone received and lost, delay,

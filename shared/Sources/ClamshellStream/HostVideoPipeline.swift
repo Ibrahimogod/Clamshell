@@ -67,6 +67,11 @@ public final class HostVideoPipeline: @unchecked Sendable {
     private let encoder: VideoEncoder
     private let converter: PixelConverter?
     private let inputFormat: OSType?
+    /// 4:4:4 only: converts the newest capture on its own queue while the encoder is busy with the previous
+    /// frame, so the 3–5 ms conversion overlaps the 11 ms encode instead of adding to it (71 → 80+ fps at
+    /// 2670×1734 on the M5). A second converter, so neither is shared across queues.
+    private let preConverter: PixelConverter?
+    private let convertQueue = DispatchQueue(label: "clamshell.host.convert", qos: .userInteractive)
     private let fragmenter: Fragmenter
     private let output: Output
     private let keyframeIntervalFloor: Duration
@@ -83,6 +88,9 @@ public final class HostVideoPipeline: @unchecked Sendable {
     private var awaitingSend: [UInt32: UInt64] = [:]        // frameId → capture time, delta frames only
     private var senderDelay = DelayTracker()
     private var pending: (buffer: SharedPixelBuffer, captureNs: UInt64)?
+    /// The capture being converted ahead on `convertQueue`, and the newest finished conversion.
+    private var convertingSource: SharedPixelBuffer?
+    private var converted: (source: SharedPixelBuffer, output: SharedPixelBuffer)?
     private var last: (buffer: SharedPixelBuffer, captureNs: UInt64)?
     private var keyframeRequested = true
     private var parityGroup = 0
@@ -114,9 +122,11 @@ public final class HostVideoPipeline: @unchecked Sendable {
         encoder = try VideoEncoder(config: config)
         if chroma == .yuv444 {
             converter = try PixelConverter()
+            preConverter = try PixelConverter()
             inputFormat = kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange
         } else {
             converter = nil
+            preConverter = nil
             inputFormat = nil
         }
         fragmenter = Fragmenter(maxFragmentPayload: Fragmenter.payloadBudget(datagram: datagram, sessionOverhead: sessionOverhead))
@@ -149,8 +159,8 @@ public final class HostVideoPipeline: @unchecked Sendable {
         queue.async { [self] in
             guard damaged || last == nil else { return }
             pending = (buffer, captureTimeNs)
-            if inFlight { stats.skippedWhileBusy += 1; return }
-            if senderBehind { stats.skippedSendBacklog += 1; return }
+            if inFlight { stats.skippedWhileBusy += 1; preconvert(); return }
+            if senderBehind { stats.skippedSendBacklog += 1; preconvert(); return }
             encodePending()
         }
     }
@@ -218,6 +228,7 @@ public final class HostVideoPipeline: @unchecked Sendable {
 
     private func encodePending() {
         guard let p = pending else { return }
+        if let c = convertingSource, c.buffer === p.buffer.buffer { return }   // its conversion finishes shortly
         pending = nil
         if capLowered { encoder.setMaxFrameQP(nil); capLowered = false }
         scheduler.contentChanged(at: .now)
@@ -263,7 +274,9 @@ public final class HostVideoPipeline: @unchecked Sendable {
         let tag = sequence
         meta[tag] = (captureNs, refinement)
         var input = buffer.buffer
-        if let converter, let inputFormat, CVPixelBufferGetPixelFormatType(input) != inputFormat {
+        if let c = converted, c.source.buffer === input {
+            input = c.output.buffer
+        } else if let converter, let inputFormat, CVPixelBufferGetPixelFormatType(input) != inputFormat {
             do { input = try converter.convert(input, to: inputFormat) } catch {
                 stats.encoderErrors += 1
                 return
@@ -302,6 +315,22 @@ public final class HostVideoPipeline: @unchecked Sendable {
             emit(frame, captureNs: m?.captureNs ?? 0, refinement: m?.refinement ?? false)
         }
         if pending != nil, !busy { encodePending() }
+    }
+
+    /// Starts converting `pending` ahead of its encode (4:4:4), one conversion at a time; when it finishes,
+    /// encodes it if the encoder is free, or converts a newer capture that arrived meanwhile.
+    private func preconvert() {
+        guard preConverter != nil, let inputFormat, convertingSource == nil, let src = pending?.buffer,
+              CVPixelBufferGetPixelFormatType(src.buffer) != inputFormat, converted?.source.buffer !== src.buffer else { return }
+        convertingSource = src
+        convertQueue.async { [self] in
+            let out = (try? preConverter?.convert(src.buffer, to: inputFormat)).flatMap { $0 }.map(SharedPixelBuffer.init)
+            queue.async { [self] in
+                convertingSource = nil
+                if let out { converted = (src, out) }
+                if pending != nil, !busy { encodePending() } else { preconvert() }
+            }
+        }
     }
 
     private func emit(_ frame: EncodedFrame, captureNs: UInt64, refinement: Bool) {

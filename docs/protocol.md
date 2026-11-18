@@ -83,8 +83,10 @@ Input rules (ADR-0013):
 per packet. The outer TLS is camouflage only (ADR-0003): the phone accepts any certificate, and Noise inside
 authenticates the Mac. The phone starts the paths 150 ms apart and sends on all of them until one answers;
 the best-ranked path that answers is used. Every 2 s it copies one packet to better-ranked paths so a better
-one can take over, and a path silent for 400 ms while sending is dropped and the race starts again. The Mac
-answers on whichever path the newest authentic packet came from (roaming). The WSS listener drops packets
+one can take over (straight away when a better path comes up, or joins mid-session once the phone sees the
+Mac on its Wi-Fi), and a path silent for 400 ms while sending is dropped and the race starts again. The Mac
+answers on whichever path the newest authentic packet came from (roaming), except that it stays on a
+local-network address while it has heard the phone there in the last 0.5 s. The WSS listener drops packets
 while more than 384 KB is queued to a socket, so video never builds a TCP backlog; sockets silent 30 s close.
 
 **Pairing, outer type `0x05` (ADR-0014).** `0x05 | step | 00 00 | pairingId(4) | body`, LAN source
@@ -181,3 +183,47 @@ and connected again before the old session timed out, the Mac kept the old sessi
 connection's input (sequence numbers starting at 0 again) was dropped as already seen and the pointer shape
 was never re-sent, so the pointer vanished and input did nothing until the old session expired. Two pre-1.7
 peers (no id on either side) keep the old behaviour.
+
+## Protocol 1.8 (Mac → phone files, microphone, one window, frame-rate cap, app expiry)
+
+| Type | Message | Ch. | Direction | Body |
+|---|---|---|---|---|
+| `0x0025` | FrameRateRequest | ctl | phone → Mac | 1 maxFps (0 = no cap) |
+| `0x0026` | WindowListRequest | ctl | phone → Mac | empty |
+| `0x0027` | WindowList | ctl, via bulk | Mac → phone | 1 repeated window: TLV {1 window id (non-zero) · 2 app · 3 title · 4 width · 5 height (points)} (≤ 64, front to back) |
+| `0x0028` | SourceRequest | ctl | phone → Mac | 1 windowId (0 = the whole screen) · 2 fit (bool) |
+| `0x0302` | FileOffer | ctl, via bulk | **also** Mac → phone | as in 1.5 |
+| `0x0401` | AudioPacket | audio | **also** phone → Mac | as in 1.5, but 48 kHz **mono** voice |
+
+| Hello tag | Field | Type | Meaning |
+|---|---|---|---|
+| 10 | appExpires | uint64, optional | When the phone app's signature runs out (Unix seconds); absent for builds that don't expire |
+
+| HostState tag | Field | Type | Meaning |
+|---|---|---|---|
+| 7 | micReady | bool, optional | The Clamshell Microphone driver is installed, so the phone's mic can be heard |
+| 8 | window | string, optional | The title of the window being streamed; absent for the whole screen |
+| 9 | fps | uint | The rate the Mac streams at now (0 = unknown) |
+
+New capability bits: 14 `filesToPhone` · 15 `micOpus` · 16 `windowStreaming` · 17 `frameRateCap`. Each new
+message is sent only to a peer that advertised the matching bit, so 1.7 peers never see them.
+
+**FrameRateRequest** comes from the phone's battery and heat saver. The Mac streams at the display mode's
+rate under that cap, but never below 15 fps (`FrameRateRequest.effective`), and rebuilds the stream when the
+cap changes. Without a request the cap is the Hello's `maxFps` when it is below 120 (1.8 phones only).
+
+**SourceRequest** with a window id makes the Mac capture that window alone
+(`SCContentFilter(desktopIndependentWindow:)`). Pointer input and the cursor are mapped into the window's
+frame, which the Mac re-reads every 250 ms. A move follows at once, a resize rebuilds the stream, and when
+the window closes the Mac goes back to the whole screen. With `fit`, the Mac first resizes the window
+(Accessibility) so that it shows at 1:1 on the phone's picture, inside its display's visible frame. If the
+window can't be captured, the Mac keeps streaming the whole screen.
+
+**FileOffer, Mac → phone:** the phone checks the hash and saves the file under the same name rules as the Mac,
+in `Documents/From Mac` (Files › On My iPhone › Clamshell › From Mac), never overwriting. The size limit is
+still 32 MiB.
+
+**AudioPacket, phone → Mac:** 20 ms packets of the phone's microphone, with iOS voice processing (echo
+cancellation) on. Only while the phone's mic button is on, and only to a Mac that advertised `micOpus`. The
+Mac plays them into the Clamshell Microphone driver (a loopback Core Audio device), under the same rules as
+1.5: newer seq only, at most 120 ms queued.

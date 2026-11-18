@@ -31,9 +31,28 @@ final class InputInjector: @unchecked Sendable {
     private var lastCursorReportNs: UInt64 = 0
     private var cursorDirty = false
     private(set) var shapeId: UInt64 = 0
+    /// A streamed window's frame (1.8), in global points: the pointer stays in it and cursor reports are
+    /// relative to it. Nil: the whole display.
+    private let area = OSAllocatedUnfairLock<CGRect?>(initialState: nil)
+    func setArea(_ rect: CGRect?) {
+        area.withLock { $0 = rect }
+        queue.async { [self] in cursorDirty = true }
+    }
+
+    /// The streamed rectangle: the window, or the display.
+    private var bounds: CGRect { area.withLock { $0 } ?? CGDisplayBounds(displayID) }
+
+    /// While one window is streamed: called on the input queue before a button goes down, with the point
+    /// (global display points), so the host can bring the window to the front first.
+    var beforeClick: (@Sendable (CGPoint) -> Void)? {
+        get { clickHook.withLock { $0 } }
+        set { clickHook.withLock { $0 = newValue } }
+    }
+    private let clickHook = OSAllocatedUnfairLock<(@Sendable (CGPoint) -> Void)?>(initialState: nil)
+
     /// Picture points (what the phone uses) ↔ the display's points.
     var pointerSpace: PointerSpace {
-        let b = CGDisplayBounds(displayID)
+        let b = bounds
         return PointerSpace(pictureWidth: reportSize.width, pictureHeight: reportSize.height, displayWidth: b.width, displayHeight: b.height)
     }
 
@@ -63,7 +82,7 @@ final class InputInjector: @unchecked Sendable {
         queue.async { [self] in
             // Keep the cursor where it is if it's on the streamed display (mirroring); otherwise bring it to
             // the middle of the Clamshell display.
-            let b = CGDisplayBounds(displayID)
+            let b = bounds
             if let here = CGEvent(source: nil)?.location, b.contains(here) {
                 position = here
             } else {
@@ -115,7 +134,7 @@ final class InputInjector: @unchecked Sendable {
         if now >= lastCursorReportNs + (cursorDirty ? 16_000_000 : 250_000_000) {
             lastCursorReportNs = now
             cursorDirty = false
-            let b = CGDisplayBounds(displayID)
+            let b = bounds
             let here = CGEvent(source: nil)?.location ?? position ?? .zero
             let onDisplay = b.contains(here)
             let p = onDisplay ? here : (position ?? CGPoint(x: b.midX, y: b.midY))
@@ -137,7 +156,7 @@ final class InputInjector: @unchecked Sendable {
             let d = pointerSpace.displayDelta(dx: dx, dy: dy)
             move(to: current().applying(.init(translationX: d.dx, y: d.dy)), dx: d.dx, dy: d.dy, buttons: buttons)
         case .moveTo(let x, let y, let buttons):
-            let b = CGDisplayBounds(displayID)
+            let b = bounds
             let p = CGPoint(x: b.minX + x * b.width, y: b.minY + y * b.height)
             let c = current()
             move(to: p, dx: p.x - c.x, dy: p.y - c.y, buttons: buttons)
@@ -153,7 +172,7 @@ final class InputInjector: @unchecked Sendable {
     }
 
     private func current() -> CGPoint {
-        let b = CGDisplayBounds(displayID)
+        let b = bounds
         // Follow the real cursor when it is on our display (an app warped it, or someone at the Mac moved
         // it); otherwise bring it back to where the phone left it.
         if let here = CGEvent(source: nil)?.location, b.contains(here) { position = here; return here }
@@ -161,7 +180,7 @@ final class InputInjector: @unchecked Sendable {
     }
 
     private func move(to target: CGPoint, dx: Double, dy: Double, buttons: MouseButtons) {
-        let b = CGDisplayBounds(displayID)
+        let b = bounds
         let p = CGPoint(x: min(max(target.x, b.minX), b.maxX - 1), y: min(max(target.y, b.minY), b.maxY - 1))
         position = p
         cursorDirty = true
@@ -182,7 +201,9 @@ final class InputInjector: @unchecked Sendable {
         case .right: (down ? .rightMouseDown : .rightMouseUp, .right)
         case .middle: (down ? .otherMouseDown : .otherMouseUp, .center)
         }
-        guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: current(), mouseButton: cg) else { return }
+        let at = current()
+        if down, area.withLock({ $0 }) != nil, let hook = beforeClick { hook(at) }
+        guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: cg) else { return }
         e.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
         e.flags = Self.cgFlags(flags)
         e.post(tap: .cghidEventTap)

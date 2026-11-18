@@ -10,7 +10,9 @@ import CryptoKit
 import Darwin
 import Foundation
 import Observation
+import Synchronization
 import UIKit
+import AVFAudio
 
 /// The phone's single clock for latency maths: `CLOCK_UPTIME_RAW` ns, the same base as
 /// `CACurrentMediaTime()` and `CADisplayLink` timestamps.
@@ -50,6 +52,10 @@ final class HUDModel {
     var pathName = ""
     /// Whether the Mac may post keyboard and mouse events (nil: a Mac without input, or not reported yet).
     var inputAllowed: Bool?
+    /// 1.8 Macs: whether the Clamshell Microphone is installed there; the window streamed alone; its frame rate.
+    var micReady: Bool?
+    var window: String?
+    var macFps = 0
 
     /// A banner over the stream when the Mac's screen isn't what the user expects to see.
     var macBanner: String? {
@@ -76,9 +82,16 @@ final class ClientController {
 
     private(set) var phase: Phase = .idle
     private(set) var hosts: [BonjourBrowser.Found] = []
-    /// The Mac this phone paired with (ADR-0014), from the Keychain.
-    private(set) var pairedMac: PairedMac?
-    var isPaired: Bool { pairedMac != nil }
+    /// The Macs this phone paired with (ADR-0014), from the Keychain. `pairedMac` is the one selected: the
+    /// away-from-home address fields and Connect are about it.
+    private(set) var macs: [PairedMac] = []
+    private(set) var selectedMacKey: Data? = UserDefaults.standard.data(forKey: "selectedMac") {
+        didSet { UserDefaults.standard.set(selectedMacKey, forKey: "selectedMac") }
+    }
+    var pairedMac: PairedMac? { macs.first { $0.publicKey == selectedMacKey } ?? macs.first }
+    var isPaired: Bool { !macs.isEmpty }
+    /// The Mac of the session being set up or streamed (its learned address is saved to it).
+    private var connectedMacKey: Data?
     enum PairingStatus: Equatable { case idle, working, sas(String), failed(String) }
     private(set) var pairingStatus: PairingStatus = .idle
     /// Ask for Touch ID before connecting (ADR-0014; default on, skipped where the phone has no biometrics).
@@ -86,20 +99,38 @@ final class ClientController {
     var sound = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true {
         didSet { UserDefaults.standard.set(sound, forKey: "sound"); audio?.muted = !sound }
     }
-    private var audio: AudioPlayer?
+    private var audio: AudioPlayer? { didSet { audioSink.player = audio } }
+    /// The player the receive task feeds (it changes when the microphone turns on or off).
+    @ObservationIgnored private let audioSink = AudioSink()
     var requireBiometrics = UserDefaults.standard.object(forKey: "requireBiometrics") as? Bool ?? true {
         didSet { UserDefaults.standard.set(requireBiometrics, forKey: "requireBiometrics") }
     }
     private var unlockedAt: Date?
     /// `host:port` (or `[v6]:port`) for a Mac that Bonjour can't see: a remote network, or the netsim relay.
+    /// The selected Mac's away-from-home address (each paired Mac keeps its own).
     var manualAddress = UserDefaults.standard.string(forKey: "manualAddress") ?? "" {
-        didSet { UserDefaults.standard.set(manualAddress, forKey: "manualAddress") }
+        didSet {
+            UserDefaults.standard.set(manualAddress, forKey: "manualAddress")
+            updateSelected { $0.address = manualAddress }
+        }
     }
     var manualAddressValid: Bool { Self.parse(manualAddress) != nil }
     /// The Mac's TCP fallback port (TLS + WebSocket, path P3); 0 turns the fallback off.
     var tcpPort = UserDefaults.standard.object(forKey: "tcpPort") as? Int ?? 443 {
-        didSet { UserDefaults.standard.set(tcpPort, forKey: "tcpPort") }
+        didSet {
+            UserDefaults.standard.set(tcpPort, forKey: "tcpPort")
+            if let p = UInt16(exactly: tcpPort) { updateSelected { $0.tcpPort = p } }
+        }
     }
+    /// The battery and heat saver: how fast to ask the Mac to stream (1.1).
+    var powerSaver = PowerSaverMode(rawValue: UserDefaults.standard.string(forKey: "powerSaver") ?? "") ?? .auto {
+        didSet { UserDefaults.standard.set(powerSaver.rawValue, forKey: "powerSaver"); updateFrameRateCap() }
+    }
+    /// The cap in force (0: none), for the HUD and the display link.
+    private(set) var frameRateCap: UInt16 = 0
+    @ObservationIgnored private var powerObservers: [NSObjectProtocol] = []
+    /// Files the Mac sent (1.1), newest first; they live in Files › On My iPhone › Clamshell › From Mac.
+    private(set) var receivedFiles: [URL] = []
     var showHUD = false
     let hud = HUDModel()
     private(set) var pipeline: ClientVideoPipeline?
@@ -147,6 +178,8 @@ final class ClientController {
     private var browser: BonjourBrowser?
     private var connection: ClientSessionConnection?
     private var udp: PathRacer?
+    /// Whether the current race has the Mac's LAN path (false after connecting by address before Bonjour saw it).
+    private var raceHasLAN = false
     private var tasks: [Task<Void, Never>] = []
     private var lastStats: (at: ContinuousClock.Instant, decoded: Int, bytes: Int, presented: Int)?
     private var pingId: UInt32 = 0
@@ -181,7 +214,16 @@ final class ClientController {
     init() {
         if let h = launchHost { manualAddress = h }
         if CommandLine.arguments.contains("--camera-test") { cameraTestEnabled = true }
-        if let d = try? keychain.data("paired-mac") { pairedMac = try? JSONDecoder().decode(PairedMac.self, from: d) }
+        if let d = try? keychain.data("paired-macs"), let list = try? JSONDecoder().decode([PairedMac].self, from: d) {
+            macs = list
+        } else if let d = try? keychain.data("paired-mac"), var one = try? JSONDecoder().decode(PairedMac.self, from: d) {
+            one.address = manualAddress.isEmpty ? nil : manualAddress          // 1.0: one Mac, address in defaults
+            macs = [one]
+            saveMacs()
+        }
+        if let m = pairedMac { applySelection(m) }
+        receivedFiles = Self.listReceivedFiles()
+        startPowerWatch()
         try? keychain.delete("dev-code")                       // M1 development pairing is gone
         posture.onDisplayChange = { [weak self] p in self?.displayPostureChanged(p) }
         // `--posture flat|book|laptop|cover` pins a posture at launch (simulator tests have no hinge).
@@ -200,8 +242,9 @@ final class ClientController {
             return
         }
         var targets: [(String, UInt16)] = invite.addresses.map { ($0, invite.port) }
-        if targets.isEmpty, let found = hosts.first, case .hostPort(let h, let p) = found.endpoint { targets.append(("\(h)", p.rawValue)) }
-        let bonjour = targets.isEmpty ? hosts.first?.endpoint : nil
+        let named = hosts.first { !invite.macName.isEmpty && $0.name == invite.macName } ?? hosts.first { h in !macs.contains { $0.name == h.name } } ?? hosts.first
+        if targets.isEmpty, let found = named, case .hostPort(let h, let p) = found.endpoint { targets.append(("\(h)", p.rawValue)) }
+        let bonjour = targets.isEmpty ? named?.endpoint : nil
         if targets.isEmpty, bonjour == nil, let (h, p) = Self.parse(manualAddress) { targets.append((h, p)) }
         guard !targets.isEmpty || bonjour != nil else {
             pairingStatus = .failed("No Mac found on this Wi-Fi. Pair at home, on the same network as the Mac.")
@@ -218,20 +261,22 @@ final class ClientController {
                 let (mac, endpoint) = try await PairingClient.pair(path: path, identity: identity, invite: invite, phoneName: name) { sas in
                     Task { @MainActor in self.pairingStatus = .sas(sas) }
                 }
-                let record = PairedMac(publicKey: Data(mac.publicKey), psk: Data(mac.psk), name: mac.name, udpPort: endpoint.udpPort,
+                var record = PairedMac(publicKey: Data(mac.publicKey), psk: Data(mac.psk), name: mac.name, udpPort: endpoint.udpPort,
                                        tcpPort: endpoint.tcpPort, publicHost: endpoint.publicHost, paired: .now)
-                try keychain.set(try JSONEncoder().encode(record), for: "paired-mac")
-                pairedMac = record
                 if !endpoint.publicHost.isEmpty {
                     let h = endpoint.publicHost.contains(":") ? "[\(endpoint.publicHost)]" : endpoint.publicHost
-                    manualAddress = "\(h):\(endpoint.udpPort)"
+                    record.address = "\(h):\(endpoint.udpPort)"
                 }
-                if endpoint.tcpPort > 0 { tcpPort = Int(endpoint.tcpPort) }
+                if endpoint.tcpPort == 0 { record.tcpPort = UInt16(clamping: tcpPort) }
+                macs.removeAll { $0.publicKey == record.publicKey }
+                macs.append(record)
+                try saveMacsThrowing()
+                applySelection(record)
                 pairingStatus = .idle
                 print("paired with \(mac.name)")
                 if CommandLine.arguments.contains("--network-check") { runNetworkCheck() }
                 if autoConnect, phase == .idle {
-                    if launchHost != nil { connectManual() } else if let first = hosts.first { connect(to: first) }
+                    if launchHost != nil { connectManual() } else if let first = lanHost(for: record) { connect(to: first) }
                 }
             } catch PairingClient.Failure.rejected {
                 pairingStatus = .failed("The Mac said the digits didn't match. Try again.")
@@ -250,16 +295,20 @@ final class ClientController {
     /// The Mac's away-from-home address (ADR-0005), newest `seq` wins. Fills the address field when it's
     /// empty or still holds the previous learned value; a hand-typed address is left alone.
     private func learn(_ e: HomeEndpoint) {
-        guard var mac = pairedMac, !e.host.isEmpty, e.seq > mac.endpointSeq ?? 0 else { return }
+        guard let i = macs.firstIndex(where: { $0.publicKey == connectedMacKey }) else { return }
+        var mac = macs[i]
+        guard !e.host.isEmpty, e.seq > mac.endpointSeq ?? 0 else { return }
         let h = e.host.contains(":") ? "[\(e.host)]" : e.host
         let old = mac.publicHost.isEmpty ? nil : (mac.publicHost.contains(":") ? "[\(mac.publicHost)]" : mac.publicHost) + ":\(mac.udpPort)"
-        if manualAddress.isEmpty || manualAddress == old { manualAddress = "\(h):\(e.udpPort)" }
+        let current = mac.address ?? ""
+        if current.isEmpty || current == old { mac.address = "\(h):\(e.udpPort)" }
         mac.publicHost = e.host
         mac.udpPort = e.udpPort
-        if e.tcpPort > 0 { mac.tcpPort = e.tcpPort; tcpPort = Int(e.tcpPort) }
+        if e.tcpPort > 0 { mac.tcpPort = e.tcpPort }
         mac.endpointSeq = e.seq
-        pairedMac = mac
-        try? keychain.set(try JSONEncoder().encode(mac), for: "paired-mac")
+        macs[i] = mac
+        saveMacs()
+        if mac.publicKey == pairedMac?.publicKey { applySelection(mac) }
         print("# home endpoint: \(e.host) udp \(e.udpPort) tcp \(e.tcpPort)")
     }
 
@@ -279,7 +328,7 @@ final class ClientController {
         checking = true
         let peer = PeerConfig(publicKey: [UInt8](mac.publicKey), psk: [UInt8](mac.psk), name: mac.name)
         var plan: [(String, String, @Sendable () -> any PacketPath)] = []
-        if let lan = hosts.first?.endpoint { plan.append(("Same Wi-Fi (LAN)", "Bonjour", { UDPClient(endpoint: lan, name: "lan") })) }
+        if let lan = lanHost(for: mac)?.endpoint { plan.append(("Same Wi-Fi (LAN)", "Bonjour", { UDPClient(endpoint: lan, name: "lan") })) }
         else { plan.append(("Same Wi-Fi (LAN)", "Mac not visible on this network", { DeadPath() })) }
         if let (h, p) = Self.parse(manualAddress) {
             plan.append(("Home, UDP \(p)", h, { UDPClient(host: h, port: p, name: "udp") }))
@@ -307,10 +356,92 @@ final class ClientController {
         }
     }
 
-    /// Forget the Mac. Pairing again needs the Mac's owner and the home Wi-Fi.
-    func forgetMac() {
-        try? keychain.delete("paired-mac")
-        pairedMac = nil
+    /// Forget a Mac (the selected one by default). Pairing again needs the Mac's owner and the home Wi-Fi.
+    func forgetMac(_ mac: PairedMac? = nil) {
+        guard let key = (mac ?? pairedMac)?.publicKey else { return }
+        macs.removeAll { $0.publicKey == key }
+        try? keychain.delete("paired-mac")                    // the 1.0 single-Mac record, if any
+        saveMacs()
+        if selectedMacKey == key { selectedMacKey = nil }
+        if let m = pairedMac { applySelection(m) } else { manualAddress = "" }
+    }
+
+    /// Makes `mac` the one the address fields and Connect are about.
+    func select(_ mac: PairedMac) {
+        guard mac.publicKey != pairedMac?.publicKey || selectedMacKey == nil else { return }
+        applySelection(mac)
+    }
+
+    /// `mac`'s away-from-home address: as typed or learned, else from the address it gave at pairing.
+    func awayAddress(of mac: PairedMac) -> String {
+        mac.address ?? (mac.publicHost.isEmpty ? "" : (mac.publicHost.contains(":") ? "[\(mac.publicHost)]" : mac.publicHost) + ":\(mac.udpPort)")
+    }
+
+    /// Whether Connect can reach `mac` now: on this Wi-Fi, or at a usable away-from-home address.
+    func canConnect(_ mac: PairedMac) -> Bool { lanHost(for: mac) != nil || Self.parse(awayAddress(of: mac)) != nil }
+
+    private func applySelection(_ mac: PairedMac) {
+        selectedMacKey = mac.publicKey
+        let address = awayAddress(of: mac)
+        if manualAddress != address { manualAddress = address }
+        if mac.tcpPort > 0, tcpPort != Int(mac.tcpPort) { tcpPort = Int(mac.tcpPort) }
+    }
+
+    private func updateSelected(_ change: (inout PairedMac) -> Void) {
+        guard let key = pairedMac?.publicKey, let i = macs.firstIndex(where: { $0.publicKey == key }) else { return }
+        var m = macs[i]
+        change(&m)
+        guard m != macs[i] else { return }
+        macs[i] = m
+        saveMacs()
+    }
+
+    private func saveMacs() { try? saveMacsThrowing() }
+    private func saveMacsThrowing() throws { try keychain.set(try JSONEncoder().encode(macs), for: "paired-macs") }
+
+    /// The Bonjour result for `mac` on this Wi-Fi: by name, or the only Mac found when only one is paired.
+    func lanHost(for mac: PairedMac) -> BonjourBrowser.Found? {
+        hosts.first { $0.name == mac.name } ?? (macs.count == 1 && hosts.count == 1 ? hosts.first : nil)
+    }
+
+    // MARK: Siri, Shortcuts and the widget (1.1)
+
+    /// A Mac to connect to once Bonjour has had a moment to look (the app was just opened by a link).
+    @ObservationIgnored private var pendingConnect: PairedMac?
+
+    /// `clamshell://connect` (optionally `?mac=Name`) and `clamshell://disconnect`, from the App Intents, the
+    /// widget and the Control Center control. Connects on this Wi-Fi if the Mac shows up within 2 s, else
+    /// at its away-from-home address.
+    func open(_ url: URL) {
+        guard url.scheme == "clamshell" else { return }
+        switch url.host() {
+        case "connect":
+            let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "mac" }?.value
+            guard let mac = macs.first(where: { $0.name == name }) ?? pairedMac else { return }
+            switch phase {
+            case .connecting, .streaming: return
+            case .idle, .failed: break
+            }
+            select(mac)
+            if lanHost(for: mac) != nil { connect(mac: mac); return }
+            pendingConnect = mac
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                guard let m = pendingConnect, m.publicKey == mac.publicKey else { return }
+                pendingConnect = nil
+                connect(mac: m)
+            }
+        case "disconnect":
+            disconnect()
+        default:
+            break
+        }
+    }
+
+    /// Connect to `mac`: on this Wi-Fi if Bonjour sees it, else at its away-from-home address.
+    func connect(mac: PairedMac) {
+        select(mac)
+        if let h = lanHost(for: mac) { connect(to: h) } else { connectManual() }
     }
 
     /// Touch ID before a session, at most every 5 minutes (skipped where there's no biometry).
@@ -343,12 +474,28 @@ final class ClientController {
             for await list in b.results {
                 guard let self else { return }
                 hosts = list.sorted { $0.name < $1.name }
-                if autoConnect, launchHost == nil, phase == .idle, isPaired, pairingStatus == .idle, let first = hosts.first { connect(to: first) }
+                joinLANIfFound()
+                if let mac = pendingConnect, lanHost(for: mac) != nil { pendingConnect = nil; connect(mac: mac) }
+                if autoConnect, launchHost == nil, phase == .idle, let mac = pairedMac, pairingStatus == .idle, let first = lanHost(for: mac) { connect(to: first) }
             }
         })
         if let invite = ProcessInfo.processInfo.environment["CLAMSHELL_PAIR_INVITE"], !isPaired || pairedMac.map({ PairingInvite(string: invite)?.macPublicKey != [UInt8]($0.publicKey) }) == true {
             pair(code: invite)                                 // automation: pair first, then auto-connect
         } else if autoConnect, launchHost != nil, phase == .idle { connectManual() }
+    }
+
+    /// Connected by address before Bonjour saw the Mac on this Wi-Fi: add the LAN path now. It ranks first,
+    /// so the race moves the session onto it within a couple of seconds, off the router's loopback.
+    private func joinLANIfFound() {
+        guard let udp, !raceHasLAN, let mac = macs.first(where: { $0.publicKey == connectedMacKey }) else { return }
+        switch phase {
+        case .connecting, .streaming: break
+        case .idle, .failed: return
+        }
+        guard let ep = lanHost(for: mac)?.endpoint else { return }
+        raceHasLAN = true
+        print("# path: the Mac is on this Wi-Fi now; adding the LAN path")
+        udp.add(.init(rank: 0, delay: .zero) { UDPClient(endpoint: ep, name: "lan") })
     }
 
     /// Splits `host:port`, `[v6]:port`. Nil if malformed.
@@ -375,7 +522,9 @@ final class ClientController {
     }
 
     func connect(to host: BonjourBrowser.Found) {
+        if let named = macs.first(where: { $0.name == host.name }) { select(named) }
         guard let mac = pairedMac else { return }
+        connectedMacKey = mac.publicKey
         phase = .connecting(host.name)
         Task {
             guard await unlock() else { phase = .failed("Touch ID didn't match."); return }
@@ -395,6 +544,9 @@ final class ClientController {
         hardware = nil
         audio?.stop()
         audio = nil
+        micOn = false
+        windows = []
+        frameRateCap = 0
         input?.stop()
         input = nil
         hud.inputAllowed = nil
@@ -472,19 +624,21 @@ final class ClientController {
     private func run(host: BonjourBrowser.Found, mac: PairedMac) async {
         do {
             var caps: Capabilities = [.hevc420Decode, .refinementFrames, .benchBarcode, .receiverReports, .fecXor,
-                                      .inputV1, .clientCursor, .clipboardV1]
+                                      .inputV1, .clientCursor, .clipboardV1, .filesToPhone, .micOpus, .windowStreaming, .frameRateCap]
             if DecodeProbe.cached444 == true { caps.insert(.hevc444Decode) }
             caps.insert(.audioOpus)                              // muting is local, so a later unmute plays at once
             let wanted = PostureModel.mode(for: posture.display)
             let modes = [wanted] + [DisplayMode.laptop, .flat, .book, .cover].filter { $0 != wanted }
-            let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: caps, displayModes: modes, maxFps: 120,
-                              deviceName: UIDevice.current.name, connectionId: UInt64.random(in: 1...UInt64.max))
+            let cap = currentCap()
+            let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: caps, displayModes: modes,
+                              maxFps: cap == 0 ? 120 : cap, deviceName: UIDevice.current.name,
+                              connectionId: UInt64.random(in: 1...UInt64.max), appExpires: AppExpiryWatch.unixSeconds)
             // Race the paths (ADR-0002): LAN (Bonjour), home UDP, then TLS + WebSocket on TCP, 150 ms apart.
             var candidates: [PathRacer.Candidate] = []
             let isManual = host.name == manualAddress
             // Connect (the home address) at home still tries the Mac on this Wi-Fi first: the router's own
             // public address loops back slowly or, on some routers, drops the video entirely.
-            let lan = isManual ? (hosts.first { $0.name == mac.name } ?? hosts.first) : host
+            let lan = isManual ? lanHost(for: mac) : host
             if let ep = lan?.endpoint {
                 candidates.append(.init(rank: 0, delay: .zero) { UDPClient(endpoint: ep, name: "lan") })
             }
@@ -497,6 +651,7 @@ final class ClientController {
             }
             let udp = PathRacer(candidates)
             self.udp = udp
+            raceHasLAN = lan?.endpoint != nil
             let conn = ClientSessionConnection(udp: udp, identity: try identity(),
                                                server: PeerConfig(publicKey: [UInt8](mac.publicKey), psk: [UInt8](mac.psk), name: mac.name), hello: hello)
             connection = conn
@@ -504,6 +659,7 @@ final class ClientController {
             let macHello = try await conn.connect(timeout: .seconds(5))
             macMinor = macHello.protoMinor
             macCaps = macHello.capabilities
+            frameRateCap = macCaps.contains(.frameRateCap) ? cap : 0
             // A 1.3 Mac builds the first mode it understands and can't change it; 1.4 follows the posture.
             displayMode = wanted
             let reports = macHello.protoMinor >= 1 && macHello.capabilities.contains(.receiverReports)
@@ -533,9 +689,8 @@ final class ClientController {
             }
             if cameraTestEnabled { startCameraTest() }
             phase = .streaming(host.name)
-            if macHello.capabilities.contains(.audioOpus) {
-                do { let a = try AudioPlayer(); a.muted = !sound; audio = a } catch { print("audio: \(error)") }
-            }
+            micOn = false
+            restartAudio(conn)
             #if DEBUG
             // `--posture-switch flat`: pin that posture 3 s into the stream (tests the display mode rebuild).
             if let i = CommandLine.arguments.firstIndex(of: "--posture-switch"), i + 1 < CommandLine.arguments.count,
@@ -555,11 +710,11 @@ final class ClientController {
             #endif
             UIApplication.shared.isIdleTimerDisabled = true
 
-            let player = audio
+            let audioBox = audioSink
             tasks.append(Task.detached { [weak self] in
                 for await batch in conn.messages {
                     pipeline.handle(batch)                       // video: thread-safe, stays off the main actor
-                    if let player {                              // audio: also off the main actor
+                    if let player = audioBox.player {            // audio: also off the main actor
                         for m in batch where m.channel == .audio { if let p = try? AudioPacket(m) { player.handle(p) } }
                     }
                     let control = batch.filter { $0.channel != .video && $0.channel != .audio }
@@ -634,6 +789,10 @@ final class ClientController {
                     hud.inputAllowed = h.inputAllowed
                     if h.localUser != hud.macLocalUser { print("# mac local user: \(h.localUser)") }
                     hud.macLocalUser = h.localUser
+                    hud.micReady = h.micReady
+                    if h.window != hud.window { print("# streaming: \(h.window ?? "the whole screen")") }
+                    hud.window = h.window
+                    hud.macFps = Int(h.fps)
                     hud.rateText = String(format: "target %.1f Mbit/s", Double(h.targetBitrateKbps) / 1000) + (h.fecPercent > 0 ? " · FEC \(h.fecPercent)%" : "")
                 }
             case .hostStats:
@@ -651,7 +810,7 @@ final class ClientController {
                 if let done { received(done) }
             case .bulkAck:
                 if let a = try? BulkAck(m) { bulkOut.handle(a) }
-            case .cursorShape, .clipboardOffer, .keyboardLayout:
+            case .cursorShape, .clipboardOffer, .keyboardLayout, .windowList:
                 received(m)
             case .goodbye:
                 connectionEnded("The Mac ended the session.")
@@ -680,8 +839,170 @@ final class ClientController {
                 lastClipboardNote = "Copied an image from the Mac"
             }
             clipboardCount = UInt64(UIPasteboard.general.changeCount)
+        case .fileOffer:
+            if let f = try? FileOffer(m) { saveReceived(f) }
+        case .windowList:
+            if let l = try? WindowList(m) { windows = l.windows; loadingWindows = false; windowsTimedOut = false }
         default:
             break
+        }
+    }
+
+    // MARK: files from the Mac (1.1)
+
+    /// Files › On My iPhone › Clamshell › From Mac (the app shares its Documents folder with Files).
+    static var receivedFolder: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("From Mac", isDirectory: true)
+    }
+
+    static func listReceivedFiles() -> [URL] {
+        guard let dir = receivedFolder,
+              let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        let date = { (u: URL) in (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
+        return urls.sorted { date($0) > date($1) }
+    }
+
+    /// A file from the Mac: checked against its SHA-256, saved under a safe, unused name.
+    private func saveReceived(_ f: FileOffer) {
+        guard Array(SHA256.hash(data: f.data)) == f.sha256 else { lastClipboardNote = "A file from the Mac arrived damaged"; return }
+        guard let dir = Self.receivedFolder else { return }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            var url = dir.appendingPathComponent(FileOffer.safeName(f.name))
+            let ext = url.pathExtension, stem = url.deletingPathExtension().lastPathComponent
+            var n = 2
+            while FileManager.default.fileExists(atPath: url.path) {
+                url = dir.appendingPathComponent(ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
+                n += 1
+            }
+            try Data(f.data).write(to: url, options: [.withoutOverwriting, .completeFileProtectionUntilFirstUserAuthentication])
+            receivedFiles = Self.listReceivedFiles()
+            lastReceivedFile = url
+            lastClipboardNote = "From the Mac: \(url.lastPathComponent)"
+            print("# file from the Mac: \(url.lastPathComponent) (\(f.data.count) bytes)")
+        } catch {
+            lastClipboardNote = "Couldn't save \(f.name): \(error.localizedDescription)"
+        }
+    }
+
+    /// The newest file from the Mac this session, for the seam bar's share button.
+    private(set) var lastReceivedFile: URL?
+
+    func deleteReceived(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        if lastReceivedFile == url { lastReceivedFile = nil }
+        receivedFiles = Self.listReceivedFiles()
+    }
+
+    func refreshReceivedFiles() { receivedFiles = Self.listReceivedFiles() }
+
+    // MARK: battery and heat saver (1.1)
+
+    private func currentCap() -> UInt16 {
+        let state = UIDevice.current.batteryState
+        let conditions = PowerConditions(unplugged: state == .unplugged,
+                                         lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                                         thermal: ProcessInfo.processInfo.thermalState.rawValue)
+        return conditions.cap(powerSaver)
+    }
+
+    private func startPowerWatch() {
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        let nc = NotificationCenter.default
+        for name in [UIDevice.batteryStateDidChangeNotification, ProcessInfo.thermalStateDidChangeNotification,
+                     Notification.Name.NSProcessInfoPowerStateDidChange] {
+            powerObservers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateFrameRateCap() }
+            })
+        }
+    }
+
+    /// Conditions or the setting changed: tell a 1.8 Mac the new cap (it rebuilds the stream at that rate).
+    private func updateFrameRateCap() {
+        let cap = currentCap()
+        guard case .streaming = phase, macCaps.contains(.frameRateCap), let conn = connection, cap != frameRateCap else { return }
+        frameRateCap = cap
+        print("# power saver: \(cap == 0 ? "full rate" : "\(cap) fps")")
+        let m = FrameRateRequest(maxFps: cap).message
+        Task { await conn.send([m]) }
+    }
+
+    /// The phone's own display refresh while streaming: never faster than the Mac sends.
+    var displayFps: Float { frameRateCap == 0 ? 120 : Float(frameRateCap) }
+
+    // MARK: one window (1.1)
+
+    /// The Mac's windows, from the last `WindowListRequest`.
+    private(set) var windows: [StreamableWindow] = []
+    private(set) var loadingWindows = false
+
+    func requestWindows() {
+        guard let conn = connection, macCaps.contains(.windowStreaming) else { return }
+        loadingWindows = true
+        windowsAsked += 1
+        let asked = windowsAsked
+        Task {
+            await conn.send([WindowListRequest().message])
+            // No answer in 4 s (the Mac dropped it, or an old list is all there is): stop the spinner.
+            try? await Task.sleep(for: .seconds(4))
+            if windowsAsked == asked, loadingWindows { loadingWindows = false; windowsTimedOut = true }
+        }
+    }
+    private var windowsAsked = 0
+    /// The last request got no answer: the picker says so and offers Refresh.
+    private(set) var windowsTimedOut = false
+
+    /// Stream `window` alone (resized to fit the phone when `fit`), or the whole screen again with nil.
+    func stream(window: StreamableWindow?, fit: Bool = true) {
+        guard let conn = connection, macCaps.contains(.windowStreaming) else { return }
+        let m = (window.map { SourceRequest(windowId: $0.id, fit: fit) } ?? .wholeScreen).message
+        pictureZoom.reset()
+        Task { await conn.send([m]) }
+    }
+
+    // MARK: microphone (1.1)
+
+    /// The phone's microphone on the Mac, as its Clamshell Microphone input. Off at every connect.
+    private(set) var micOn = false
+
+    func setMic(_ on: Bool) {
+        guard on != micOn, let conn = connection, macCaps.contains(.micOpus) else { return }
+        Task {
+            if on {
+                guard await AVAudioApplication.requestRecordPermission() else {
+                    lastClipboardNote = "Microphone access is off: Settings › Apps › Clamshell › Microphone"
+                    return
+                }
+            }
+            micOn = on
+            restartAudio(conn)
+            if !on { lastClipboardNote = "Microphone off" }
+            else if hud.micReady == false { lastClipboardNote = "Mic on, but the Mac has no Clamshell Microphone (docs/USAGE.md › Microphone)" }
+            else { lastClipboardNote = "Microphone on: pick \"Clamshell Microphone\" as the input on the Mac" }
+        }
+    }
+
+    /// (Re)builds the phone's audio: the Mac's sound, and the microphone when it's on (one engine, so voice
+    /// processing can cancel the Mac's sound out of the microphone).
+    private func restartAudio(_ conn: ClientSessionConnection) {
+        audio?.stop()
+        audio = nil
+        let play = macCaps.contains(.audioOpus)
+        guard play || micOn else { return }
+        do {
+            var send: (@Sendable ([AudioPacket]) -> Void)?
+            if micOn {
+                send = { @Sendable (packets: [AudioPacket]) in
+                    let ms: [InnerMessage] = packets.map { $0.message }
+                    Task { await conn.send(ms) }
+                }
+            }
+            let a = try AudioPlayer(microphone: send)
+            a.muted = !sound || !play
+            audio = a
+        } catch {
+            print("audio: \(error)")
+            if micOn { micOn = false; lastClipboardNote = "The microphone couldn't start: \(error.localizedDescription)" }
         }
     }
 
@@ -781,6 +1102,8 @@ struct PairedMac: Codable, Equatable {
     var publicHost: String
     var paired: Date
     var endpointSeq: UInt64?
+    /// 1.1: this Mac's away-from-home address as typed or learned (`host:port`); nil: from `publicHost`.
+    var address: String?
 }
 
 /// A path that never comes up (for a check row with nothing to try).
@@ -790,4 +1113,13 @@ final class DeadPath: PacketPath {
     func start() async throws { throw CancellationError() }
     func send(_ packets: [[UInt8]]) {}
     func stop() {}
+}
+
+/// The audio player the receive task feeds: swapped when the microphone turns on or off.
+final class AudioSink: Sendable {
+    private let box = Mutex<AudioPlayer?>(nil)
+    var player: AudioPlayer? {
+        get { box.withLock { $0 } }
+        set { box.withLock { $0 = newValue } }
+    }
 }

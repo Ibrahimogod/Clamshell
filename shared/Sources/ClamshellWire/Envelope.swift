@@ -2,7 +2,7 @@
 /// bump `major` only for incompatible ones (and give old peers a clean `Incompatible`).
 public enum ProtocolVersion {
     public static let major: UInt16 = 1
-    public static let minor: UInt16 = 7
+    public static let minor: UInt16 = 8
 }
 
 /// First byte of every packet on every path (outer layer, ADR-0011 §1).
@@ -89,6 +89,10 @@ public enum MessageType: Equatable, Hashable, Sendable {
     case homeEndpoint       // 0x0022 (1.3)
     case displayModeRequest // 0x0023 (1.4)
     case keyboardLayout     // 0x0024 (1.6)
+    case frameRateRequest   // 0x0025 (1.8)
+    case windowListRequest  // 0x0026 (1.8)
+    case windowList         // 0x0027 (1.8)
+    case sourceRequest      // 0x0028 (1.8)
     case cursorShape        // 0x0030 (1.2)
     case bulkChunk          // 0x0040 (1.2)
     case bulkAck            // 0x0041 (1.2)
@@ -121,6 +125,10 @@ public enum MessageType: Equatable, Hashable, Sendable {
         case 0x0022: self = .homeEndpoint
         case 0x0023: self = .displayModeRequest
         case 0x0024: self = .keyboardLayout
+        case 0x0025: self = .frameRateRequest
+        case 0x0026: self = .windowListRequest
+        case 0x0027: self = .windowList
+        case 0x0028: self = .sourceRequest
         case 0x0030: self = .cursorShape
         case 0x0040: self = .bulkChunk
         case 0x0041: self = .bulkAck
@@ -154,6 +162,10 @@ public enum MessageType: Equatable, Hashable, Sendable {
         case .homeEndpoint: 0x0022
         case .displayModeRequest: 0x0023
         case .keyboardLayout: 0x0024
+        case .frameRateRequest: 0x0025
+        case .windowListRequest: 0x0026
+        case .windowList: 0x0027
+        case .sourceRequest: 0x0028
         case .cursorShape: 0x0030
         case .bulkChunk: 0x0040
         case .bulkAck: 0x0041

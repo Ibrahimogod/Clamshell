@@ -11,12 +11,14 @@ import ClamshellWire
 struct PathTests {
     /// One consumer per connection's message stream.
     actor Inboxes {
-        var logs: [ObjectIdentifier: LoopbackTests.Log<[InnerMessage]>] = [:]
+        /// Holds each connection too: a freed connection's ObjectIdentifier can be reused by the next test's
+        /// connection, which would then get the old (dead) inbox.
+        var logs: [ObjectIdentifier: (ClientSessionConnection, LoopbackTests.Log<[InnerMessage]>)] = [:]
         func log(_ c: ClientSessionConnection) -> LoopbackTests.Log<[InnerMessage]> {
-            if let l = logs[ObjectIdentifier(c)] { return l }
+            if let l = logs[ObjectIdentifier(c)], l.0 === c { return l.1 }
             let l = LoopbackTests.Log<[InnerMessage]>()
             Task { for await m in c.messages { await l.append(m) } }
-            logs[ObjectIdentifier(c)] = l
+            logs[ObjectIdentifier(c)] = (c, l)
             return l
         }
     }
@@ -136,6 +138,56 @@ struct PathTests {
         await c.close(); await r.server.stop(); r.wss.stop()
     }
 
+    /// Connected by address before the phone saw the Mac on the Wi-Fi: the LAN path joins mid-session and
+    /// takes over within one probe interval, on the same session (no new handshake).
+    @Test func lanAddedMidSessionTakesOver() async throws {
+        let r = try await rig()
+        let racer = PathRacer([.init(rank: 2, delay: .zero) { WSSClient(host: "127.0.0.1", port: r.wssPort) }])
+        let c = client(racer)
+        _ = try await c.connect(timeout: .seconds(3))
+        #expect(await roundTrip(r, c, id: 11))
+        #expect(racer.activeName == "wss")
+        racer.add(.init(rank: 0, delay: .zero) { UDPClient(host: "127.0.0.1", port: r.udpPort, name: "lan") })
+        #expect(racer.pathNames.first?.hasPrefix("rank 0") == true || racer.pathNames.first == "lan")
+        let added = ContinuousClock.now
+        let pinger = Task { while !Task.isCancelled { await c.send([Ping(id: 98, t1: 1).message]); try? await Task.sleep(for: .milliseconds(100)) } }
+        while racer.activeName != "lan", ContinuousClock.now - added < .seconds(5) { try await Task.sleep(for: .milliseconds(20)) }
+        let moved = ContinuousClock.now - added
+        pinger.cancel()
+        #expect(racer.activeName == "lan")
+        #expect(moved < .seconds(3), "moved after \(moved)")
+        #expect(await roundTrip(r, c, id: 12))
+        #expect(await r.server.pathKind(of: base.phone.publicKey) == "udp")
+        let connects = await r.events.items.filter { if case .peerConnected = $0 { return true } else { return false } }.count
+        #expect(connects == 1, "same session, no reconnect")
+        await c.close(); await r.server.stop(); r.wss.stop()
+    }
+
+    /// Heard on the LAN and another path at once (racing, probing), the Mac keeps replying on the LAN instead
+    /// of following each packet; once the LAN goes quiet it follows the other path.
+    @Test func macStaysOnTheLANWhileItIsLive() async throws {
+        let r = try await rig()
+        let lan = Blockable(UDPClient(host: "127.0.0.1", port: r.udpPort, name: "lan"))
+        let both = Tee(lan, WSSClient(host: "127.0.0.1", port: r.wssPort))
+        let c = client(both)
+        _ = try await c.connect(timeout: .seconds(3))
+        await c.send([Ping(id: 99, t1: 1).message])
+        try await Task.sleep(for: .milliseconds(20))
+        var kinds: Set<String> = []
+        for i in 0..<20 {
+            await c.send([Ping(id: UInt32(100 + i), t1: 1).message])
+            try await Task.sleep(for: .milliseconds(20))
+            if let k = await r.server.pathKind(of: base.phone.publicKey) { kinds.insert(k) }
+        }
+        #expect(kinds == ["udp"], "replies stayed on the LAN: \(kinds)")
+        lan.blocked.withLock { $0 = true }
+        try await Task.sleep(for: .milliseconds(600))
+        for i in 0..<2 { await c.send([Ping(id: UInt32(200 + i), t1: 1).message]) }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await r.server.pathKind(of: base.phone.publicKey) == "wss")
+        await c.close(); await r.server.stop(); r.wss.stop()
+    }
+
     @Test func wssRejectsGarbage() async throws {
         let r = try await rig()
         let w = WSSClient(host: "127.0.0.1", port: r.wssPort)
@@ -165,4 +217,28 @@ final class Blockable: PacketPath, @unchecked Sendable {
     }
     func send(_ packets: [[UInt8]]) { if !blocked.withLock({ $0 }) { inner.send(packets) } }
     func stop() { inner.stop() }
+}
+
+/// Hears both paths and sends each batch on one of them in turn: what the Mac sees from a racer whose copies
+/// land in varying order (each packet is only accepted once, from whichever path wins).
+final class Tee: PacketPath, @unchecked Sendable {
+    private let turn = Mutex(0)
+    let a: any PacketPath, b: any PacketPath
+    let datagrams: AsyncStream<[UInt8]>
+    private let cont: AsyncStream<[UInt8]>.Continuation
+    var name: String { "tee" }
+    init(_ a: any PacketPath, _ b: any PacketPath) {
+        self.a = a; self.b = b
+        (datagrams, cont) = AsyncStream.makeStream(of: [UInt8].self)
+    }
+    func start() async throws {
+        try await a.start()
+        try await b.start()
+        for s in [a.datagrams, b.datagrams] { let c = cont; Task { for await d in s { c.yield(d) } } }
+    }
+    func send(_ packets: [[UInt8]]) {
+        let first = turn.withLock { t in t += 1; return t % 2 == 0 }
+        (first ? a : b).send(packets)
+    }
+    func stop() { a.stop(); b.stop(); cont.finish() }
 }

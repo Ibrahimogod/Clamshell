@@ -67,8 +67,11 @@ if xcrun devicectl --timeout 20 list devices --json-output "$DEVICES" >/dev/null
 d=json.load(open(sys.argv[1]))["result"]["devices"]
 want=os.environ.get("CLAMSHELL_DEVICE","")
 def caps(x): return {f["featureIdentifier"] for f in x.get("capabilities",[])}
-ok=[x for x in d if x.get("connectionProperties",{}).get("tunnelState")=="connected" and "com.apple.coredevice.feature.installapp" in caps(x)]
+# A named phone is used even when it reports "disconnected": that only means no tunnel is open yet, and
+# the install opens one. Otherwise only phones with a live connection.
+ok=[x for x in d if "com.apple.coredevice.feature.installapp" in caps(x) and x.get("connectionProperties",{}).get("pairingState")=="paired"]
 if want: ok=[x for x in ok if want in (x["hardwareProperties"].get("udid",""), x.get("deviceProperties",{}).get("name",""))]
+else: ok=[x for x in ok if x.get("connectionProperties",{}).get("tunnelState")=="connected"]
 ok.sort(key=lambda x: x["hardwareProperties"].get("productType")!="iPhone19,4")   # an iPhone Duo first
 for x in ok: print("  found:", x.get("deviceProperties",{}).get("name","?"), x["hardwareProperties"].get("productType"), file=sys.stderr)
 print(ok[0]["hardwareProperties"]["udid"] if ok else "")' "$DEVICES")

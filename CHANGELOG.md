@@ -2,6 +2,78 @@
 
 All notable changes per milestone. Dates are 2026.
 
+## 1.1.0: Microphone, files to the phone, one window, battery saver, several Macs (2026-11-18)
+
+Protocol 1.8, additive: 1.0 phones and Macs still work together, without the new features.
+
+- **The phone's microphone on the Mac.** A mic button in the phone's bar sends its microphone to the Mac,
+  with iOS voice processing so the Mac's sound doesn't echo back. The Mac plays it into **Clamshell
+  Microphone**, a new loopback audio driver in the host app. You install the driver once with
+  `tools/scripts/install-microphone.sh` (it asks for your password). `tools/scripts/test-microphone-driver.sh`
+  checks the built driver in a test process without installing it (19 checks: properties, clock, loopback).
+- **Files from the Mac to the phone.** Use **Send a File to the iPhone…** in the host menu, or Finder ›
+  Services › **Send to iPhone with Clamshell**. Files land in the Files app under Clamshell › From Mac (up to
+  32 MB each), with a share button in the bar and a list under **This phone › Files from the Mac**.
+- **One window.** The window button lists the Mac's windows. Pick one and only that window is streamed, so it
+  fills the phone. The Mac can resize it to show at 1:1. Input stays inside the window, it follows the window
+  when it moves, and it goes back to the whole screen when the window closes.
+- **Battery & heat saver** (This phone). Automatic: 60 fps on battery or when warm, 30 in Low Power Mode or
+  when hot, full rate on the charger. Also Off and Always. The Mac encodes at the lower rate too.
+- **Several Macs.** Pair more than one (**Pair another Mac…**), pick one from the list, and forget one with a
+  swipe. Away from home the phone uses the chosen Mac's address.
+- **Siri, Shortcuts and a widget.** Say "Connect to my Mac with Clamshell". There's a **Connect to My Mac**
+  Shortcuts action (with an optional Mac name), a Home and Lock Screen widget, and a Control Center control.
+  All of them open `clamshell://connect`, which tries the Wi-Fi for 2 s and then the away address. The widget
+  is a third bundle ID (`<prefix>.client.widget`).
+- **A warning before the phone app runs out.** A free Apple Account's build stops opening after 7 days. The
+  phone now shows the date, warns from 3 days before and sends a reminder the day before. The Mac's menu shows
+  it per phone too (from the new Hello field).
+- Tests: golden fixtures for the four new messages and the new Hello and HostState fields, plus round trips and
+  unit tests for the expiry dates and warnings, the saver's caps, the frame-rate rule and the window maths.
+- Fixed after the first try on the Duo:
+  - **The pointer vanished, files and the window list never arrived after the stream was rebuilt.** Picking
+    a window, a resize, a posture change or a new frame-rate cap rebuilds the stream, and the Mac also reset
+    its bulk sender, so transfer ids started again at 1. The phone remembers ids it has finished and
+    acknowledged the new transfers as repeats without using them, so cursor shapes, window lists and files
+    were lost. The Mac now keeps its bulk state for the whole connection. This also explains some earlier
+    pointer losses after a posture change.
+  - **Clicks in a streamed window hit other windows.** The window is captured on its own, so the phone shows
+    it even when other windows cover it on the Mac. The Mac now brings it to the front when you pick it, and
+    again before a click if something covers it.
+  - The window picker's "Asking the Mac…" now gives up after 4 s with a Refresh hint.
+  - Siri and Shortcuts only opened the app. They now hand the connect request to the app directly, including
+    on a cold launch.
+
+## 1.0.4: More frames when mirroring the Mac (2026-11-17)
+
+- **Mirroring ran at about 65–75 fps, unevenly.** At 2670×1734 4:4:4 each frame was first converted to 4:4:4
+  YCbCr (3–5 ms) and only then encoded (11.5 ms), one after the other, so the encoder sat idle during every
+  conversion. The Mac now converts the newest capture on its own queue while the previous frame encodes. On
+  the M5 a screen changing at 120 Hz now gives 79–89 fps instead of 69–71, the encoder's own limit at this
+  size, with no added delay (`MirrorFrameRateTests`). Encoding two frames at once was measured too and
+  rejected: 101 fps but 19 ms per frame instead of 11.5.
+- The phone's stats overlay said "busy" next to the drop counts. Those captures aren't lost: a newer picture
+  replaced them before the encoder was free. It now reads "skipped N (newer picture sent)".
+- Tests: the path tests' inboxes could hand a new connection the inbox of a freed one (a reused object
+  identity), which made them fail now and then.
+
+## 1.0.3: Connecting by the home address at home (2026-11-17)
+
+- **Connecting by address (the home IP) at home stayed on the router's loopback.** The phone adds the Mac's
+  own Wi-Fi path to the race only if it has already seen the Mac on the Wi-Fi when you tap Connect. If not,
+  the whole session went out to the router's public address and back, with more delay and the router in the
+  way. Now the Wi-Fi path joins as soon as the phone sees the Mac, and the session moves onto it within about
+  2 s, on the same connection (`# path: the Mac is on this Wi-Fi now` in the phone's console). A better
+  path that comes up is probed straight away rather than at the next 2 s probe.
+- **The Mac kept switching between the two addresses.** While the phone's paths race or probe, the Mac hears
+  it on the Wi-Fi and through the router at once. It used to reply to whichever packet came last, so the video
+  went back and forth between the two paths, arriving out of order and triggering keyframe requests. Last
+  night's log shows that pattern: five stream starts in seconds, alternating `fe80…` and the public address.
+  The Mac now stays on the local-network address while it hears the phone there, and moves only after 0.5 s
+  of silence on it (Wi-Fi to mobile data still moves at once on the phone and within 0.5 s on the Mac).
+  Tested with a path that alternates packets between the LAN and the 443 path; the test fails without the
+  change.
+
 ## 1.0.2: The pointer after reconnects, no freezes after keyframes (2026-11-17)
 
 - **The pointer vanished after a reconnect.** When the phone dropped off the Wi-Fi and connected again before

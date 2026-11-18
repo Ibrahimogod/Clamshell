@@ -123,6 +123,8 @@ final class HostController {
         },
         onPanic: { [weak self] in Task { await self?.disconnectAll() } })
     private(set) var lastFileNote = ""
+    /// Bumped when a phone reports its app's expiry, so the menu redraws.
+    private(set) var expiryTick = 0
     /// Phone input messages thrown away because someone was using the Mac (for the host log).
     private var droppedInput = 0
     private var bulkOut = BulkSender()
@@ -130,6 +132,21 @@ final class HostController {
     private var bulkTask: Task<Void, Never>?
     private var cursorMonitor: CursorMonitor?
     private var clipboard: ClipboardSync?
+    /// The phone's frame-rate cap (1.8, battery saver): 0 is none.
+    private var fpsCap: UInt16 = 0
+    /// The one window streamed instead of the whole screen (1.8), if the phone asked for one.
+    private var sourceWindow: CGWindowID?
+    /// Keeps the input area on a streamed window as it moves; rebuilds the stream when it's resized or closed.
+    private var windowWatch: Task<Void, Never>?
+    /// The phone's microphone into the Clamshell Microphone driver (1.1).
+    private var mic: MicPlayer?
+    private var micWarned = false
+    /// Finder › Services › Send to iPhone with Clamshell.
+    @ObservationIgnored private var service: SendToPhoneService?
+    /// Whether the Clamshell Microphone driver is loaded (checked at start and on every session).
+    private(set) var micDriverInstalled = MicPlayer.deviceAvailable
+    /// The phone being streamed to can take files from the Mac (1.8).
+    var canSendFiles: Bool { session != nil && peerCaps.contains(.filesToPhone) }
     @ObservationIgnored private var layoutObserver: NSObjectProtocol?
 
     func start() {
@@ -151,6 +168,10 @@ final class HostController {
         }
         publicAddress.start()
         layoutObserver = KeyboardLayouts.observe { [weak self] in self?.sendKeyboardLayout() }
+        let service = SendToPhoneService { [weak self] urls in self?.sendFilesToPhone(urls) ?? "" }
+        self.service = service
+        NSApplication.shared.servicesProvider = service
+        NSUpdateDynamicServices()
         Task { await run() }
     }
 
@@ -292,7 +313,8 @@ final class HostController {
             }
             deviceStore = DeviceStore(keychain: ephemeral ? nil : keychain)
             devices = deviceStore.devices
-            let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: [.refinementFrames, .benchBarcode, .receiverReports, .fecXor, .inputV1, .clientCursor, .clipboardV1, .filesV1, .audioOpus],
+            let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: [.refinementFrames, .benchBarcode, .receiverReports, .fecXor, .inputV1, .clientCursor, .clipboardV1, .filesV1, .audioOpus,
+                                                                                .filesToPhone, .micOpus, .windowStreaming, .frameRateCap],
                               displayModes: [], maxFps: 120, deviceName: Host.current().localizedName ?? "Mac")
             let server = HostSessionServer(responder: HostResponder(identity: identity, peers: devices.map(\.peer)), hello: hello)
             self.server = server
@@ -339,6 +361,14 @@ final class HostController {
         case .peerConnected(let key, let hello, _, _):
             LocalUserGuard.notifySessionStarted(phone: hello.deviceName.isEmpty ? "Your iPhone" : hello.deviceName)
             await stopStreaming()
+            // 1.8 phones send their battery saver's cap in the Hello (1.0–1.7 sent 120 meaning "any").
+            fpsCap = hello.protoMinor >= 8 && hello.maxFps < 120 ? hello.maxFps : 0
+            sourceWindow = nil
+            micDriverInstalled = MicPlayer.deviceAvailable
+            PhoneAppExpiry.record(hello.appExpires, for: key)
+            expiryTick += 1
+            let phone = hello.deviceName.isEmpty ? "your iPhone" : hello.deviceName
+            Task { await PhoneAppExpiry.scheduleReminder(key, phone: phone) }
             await startStream(key: key, hello: hello, mode: initialMode(hello), continuing: nil, server: server)
         case .messages(let key, let messages):
             guard let session, session.peerKey == key else { return }
@@ -391,13 +421,31 @@ final class HostController {
                 presence.holdAwake(reason: "Clamshell is streaming this screen to \(hello.deviceName)")
                 peerMinor = hello.protoMinor
                 peerCaps = hello.capabilities
-                bulkOut = BulkSender()
-                bulkIn = BulkReceiver()
+                // Only for a new connection. A rebuild of the stream (a window, a posture, a frame-rate cap) keeps
+                // them: the phone remembers finished transfer ids, so a fresh sender restarting at id 1 had
+                // its cursor shapes, window lists and files acknowledged and dropped as repeats.
+                if continuing == nil {
+                    bulkOut = BulkSender()
+                    bulkIn = BulkReceiver()
+                }
                 let clientCursor = hello.capabilities.contains(.clientCursor)
-                let session = try await StreamSession(peerKey: key, mode: mode, use444: use444,
+                let session: StreamSession
+                do {
+                    session = try await StreamSession(peerKey: key, mode: mode, use444: use444,
                                                       adaptive: hello.capabilities.contains(.receiverReports),
                                                       fec: hello.capabilities.contains(.fecXor), clientCursor: clientCursor,
-                                                      mirror: mirrorMainDisplay, remote: remote, continuing: continuing, server: server)
+                                                      mirror: mirrorMainDisplay, remote: remote, continuing: continuing,
+                                                      window: sourceWindow, fpsCap: fpsCap, server: server)
+                } catch where sourceWindow != nil {
+                    // The window closed or can't be captured: back to the whole screen.
+                    print("window stream failed (\(error)): streaming the whole screen")
+                    sourceWindow = nil
+                    session = try await StreamSession(peerKey: key, mode: mode, use444: use444,
+                                                      adaptive: hello.capabilities.contains(.receiverReports),
+                                                      fec: hello.capabilities.contains(.fecXor), clientCursor: clientCursor,
+                                                      mirror: mirrorMainDisplay, remote: remote, continuing: continuing,
+                                                      window: nil, fpsCap: fpsCap, server: server)
+                }
                 self.session = session
                 if hello.capabilities.contains(.inputV1) { startInput(session, cursor: clientCursor, server: server) }
                 localGuard.start()
@@ -406,11 +454,13 @@ final class HostController {
                 audioPeer = hello.capabilities.contains(.audioOpus) ? key : nil
                 await restartAudio()
                 status = .streaming(peer: hello.deviceName)
-                streamDescription = (session.mirroring ? "this Mac's screen, \(session.width)×\(session.height) px" : "\(mode.widthPoints)×\(mode.heightPoints) pt @\(mode.scale)×")
+                streamDescription = (session.window.map { "window \"\($0.title.isEmpty ? $0.app : $0.title)\", \(session.width)×\(session.height) px" }
+                    ?? (session.mirroring ? "this Mac's screen, \(session.width)×\(session.height) px" : "\(mode.widthPoints)×\(mode.heightPoints) pt @\(mode.scale)×"))
                     + " \(session.fps) Hz · HEVC \(use444 ? "4:4:4" : "4:2:0")" + (remote ? " · internet" : "")
                 screenRecordingGranted = true
                 startStats()
                 updateBarcode()
+                watchWindow(session)
                 await sendHostState()
                 await sendHomeEndpoint()
                 sendKeyboardLayout()
@@ -430,8 +480,30 @@ final class HostController {
             }
             let t2 = HostClock.nowNs()
             var replies: [InnerMessage] = []
+            var rebuild = false
             for m in messages {
                 switch m.type {
+                case .audioPacket:
+                    if let p = try? AudioPacket(m) { micPacket(p) }
+                case .frameRateRequest:
+                    guard let r = try? FrameRateRequest(m) else { continue }
+                    let cap = r.maxFps >= 120 ? 0 : r.maxFps
+                    if cap != fpsCap {
+                        fpsCap = cap
+                        print("frame rate: the phone asks for \(cap == 0 ? "full rate" : "at most \(cap) fps")")
+                        rebuild = FrameRateRequest.effective(modeHz: Int(session.mode.refreshHz), cap: cap) != session.fps || rebuild
+                    }
+                case .windowListRequest:
+                    Task { await self.sendWindowList() }
+                case .sourceRequest:
+                    guard let r = try? SourceRequest(m) else { continue }
+                    let id: CGWindowID? = r.windowId == 0 ? nil : r.windowId
+                    if id != sourceWindow || r.fit {
+                        if let id, r.fit { fitWindow(id, session: session) }
+                        sourceWindow = id
+                        print(id.map { "source: window \($0)" + (r.fit ? ", resized to fit the phone" : "") } ?? "source: the whole screen")
+                        rebuild = true
+                    }
                 case .keyframeRequest:
                     let req = try? KeyframeRequest(m)
                     tally.request(req?.reason)
@@ -455,6 +527,122 @@ final class HostController {
                 }
             }
             if !replies.isEmpty { await server.send(replies, to: key) }
+            if rebuild {
+                // A resized window takes a moment to settle before it's captured at its new size.
+                if sourceWindow != nil { try? await Task.sleep(for: .milliseconds(200)) }
+                await restartForDisplayChoice()
+            }
+    }
+
+    // MARK: 1.1 features
+
+    /// Mac → phone: the windows it can stream on their own, as a bulk transfer.
+    private func sendWindowList() async {
+        guard session != nil, peerCaps.contains(.windowStreaming) else { return }
+        let list = WindowList(windows: await WindowSources.list())
+        sendBulk(list.message)
+    }
+
+    /// `fit`: the window's size that shows at 1:1 on the phone's largest picture, inside its screen.
+    private func fitWindow(_ id: CGWindowID, session: StreamSession) {
+        guard let hello = streamHello, let info = WindowSources.info(id) else { return }
+        let mode = initialMode(hello)
+        let screen = WindowSources.visibleFrame(around: info.frame)
+        let size = WindowSpace.fitted(pictureWidth: Double(mode.widthPoints), pictureHeight: Double(mode.heightPoints),
+                                      screenWidth: screen.width, screenHeight: screen.height)
+        let ok = WindowSources.resize(id, to: CGSize(width: size.width, height: size.height))
+        print("window \(id): " + (ok ? "resized to \(Int(size.width))×\(Int(size.height)) pt" : "couldn't be resized (the app refused, or no Accessibility)"))
+    }
+
+    /// While a window is streamed: follow it as it moves (the input area), rebuild when it's resized,
+    /// and go back to the whole screen when it closes.
+    private func watchWindow(_ session: StreamSession) {
+        windowWatch?.cancel()
+        windowWatch = nil
+        guard let w = session.window else { return }
+        session.injector?.setArea(w.frame)
+        // Captured on its own, the window shows on the phone even behind other windows; clicks would land on
+        // whatever covers it. Bring it to the front now, and again before a click if something covers it.
+        WindowSources.raise(w.id)
+        session.injector?.beforeClick = { point in
+            if !WindowSources.isFrontmost(w.id, at: point) { WindowSources.raise(w.id, wait: true) }
+        }
+        windowWatch = Task { [weak self] in
+            var last = w.frame
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled, self.session === session else { return }
+                guard let now = WindowSources.info(w.id) else {
+                    print("window \(w.id) closed: streaming the whole screen")
+                    self.sourceWindow = nil
+                    Task { await self.restartForDisplayChoice() }
+                    return
+                }
+                if abs(now.frame.width - w.frame.width) > 2 || abs(now.frame.height - w.frame.height) > 2 {
+                    print("window \(w.id) resized to \(Int(now.frame.width))×\(Int(now.frame.height)) pt: rebuilding the stream")
+                    Task { await self.restartForDisplayChoice() }
+                    return
+                }
+                if now.frame != last {
+                    last = now.frame
+                    session.injector?.setArea(now.frame)
+                }
+            }
+        }
+    }
+
+    /// The phone's microphone, into the Clamshell Microphone driver (made on the first packet).
+    private func micPacket(_ p: AudioPacket) {
+        if mic == nil {
+            do {
+                mic = try MicPlayer()
+                micDriverInstalled = true
+                print("microphone: the phone's microphone plays into Clamshell Microphone")
+            } catch {
+                if !micWarned { print("microphone: \(error)"); micWarned = true }
+                micDriverInstalled = false
+                return
+            }
+        }
+        mic?.handle(p)
+    }
+
+    /// Files to the phone (menu or Finder › Services). Returns a note for the menu (empty when all went).
+    @discardableResult
+    func sendFilesToPhone(_ urls: [URL]) -> String {
+        guard session != nil else { lastFileNote = "Connect the phone first."; return lastFileNote }
+        guard peerCaps.contains(.filesToPhone) else { lastFileNote = "The phone's app is too old to take files: update it."; return lastFileNote }
+        var sent: [String] = []
+        for url in urls {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            if values?.isDirectory == true { lastFileNote = "\(url.lastPathComponent) is a folder: zip it first."; continue }
+            if let size = values?.fileSize, size > FileOffer.maxBytes {
+                lastFileNote = "\(url.lastPathComponent) is over \(FileOffer.maxBytes / 1_048_576) MB."
+                continue
+            }
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+                lastFileNote = "Couldn't read \(url.lastPathComponent)."
+                continue
+            }
+            let bytes = [UInt8](data)
+            sendBulk(FileOffer(name: FileOffer.safeName(url.lastPathComponent), sha256: Array(SHA256.hash(data: bytes)), data: bytes).message)
+            sent.append(url.lastPathComponent)
+            print("file: sent \(url.lastPathComponent) (\(bytes.count) bytes) to the phone")
+        }
+        if !sent.isEmpty { lastFileNote = "Sent " + (sent.count == 1 ? sent[0] : "\(sent.count) files") + " to the phone" }
+        return sent.count == urls.count ? "" : lastFileNote
+    }
+
+    /// The menu's "Send a File to the iPhone…".
+    func chooseFilesForPhone() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose files for the phone (up to \(FileOffer.maxBytes / 1_048_576) MB each). They go to Files › On My iPhone › Clamshell › From Mac."
+        panel.prompt = "Send"
+        NSApplication.shared.activate()
+        guard panel.runModal() == .OK else { return }
+        sendFilesToPhone(panel.urls)
     }
 
     private func handleOther(_ event: HostSessionServer.Event, server: HostSessionServer) async {
@@ -491,6 +679,10 @@ final class HostController {
         bulkTask = nil
         cursorMonitor?.stop()
         cursorMonitor = nil
+        windowWatch?.cancel()
+        windowWatch = nil
+        mic?.stop()
+        mic = nil
         clipboard?.stop()
         clipboard = nil
         if let a = audio { audio = nil; await a.stop() }
@@ -598,7 +790,9 @@ final class HostController {
         inputAllowed = InputInjector.allowed
         let msg = HostState(screen: presence.screen, keepsAwake: presence.holdingAwake,
                             targetBitrateKbps: UInt32(clamping: s.targetBitrate / 1000), fecPercent: s.fecPercent,
-                            inputAllowed: peerCaps.contains(.inputV1) ? inputAllowed : nil, localUser: localGuard.active)
+                            inputAllowed: peerCaps.contains(.inputV1) ? inputAllowed : nil, localUser: localGuard.active,
+                            micReady: peerCaps.contains(.micOpus) ? micDriverInstalled : nil,
+                            window: s.window.map { $0.title.isEmpty ? $0.app : $0.title }, fps: UInt16(clamping: s.fps))
         await server.send([msg.message], to: s.peerKey)
     }
 
@@ -611,6 +805,7 @@ final class HostController {
             Task { await server.send([m], to: peer) }
         }
         session.injector = injector
+        if let w = session.window { injector.setArea(w.frame) }
         injector.start()
         guard cursor else { return }
         let space = injector.pointerSpace
@@ -741,6 +936,14 @@ final class StreamSession {
     var injector: InputInjector?
     let remote: Bool
     let fps: Int
+    /// The one window streamed (1.8), with its frame when the stream started; nil for a whole screen.
+    let window: StreamedWindow?
+    struct StreamedWindow: Sendable {
+        let id: CGWindowID
+        let frame: CGRect
+        let title: String
+        let app: String
+    }
     static let remoteMaxWidth = 1600
     /// One pass at 400 ms to a readable QP, instead of 120 ms + 400 ms down to near-lossless QP 12.
     static let remoteRefinement = [RefinementScheduler.Stage(delay: .milliseconds(400), maxQP: 24)]
@@ -753,15 +956,30 @@ final class StreamSession {
     ///     then the bottleneck, and a full-size 4:4:4 frame takes seconds to send, so: at most 1600 px wide,
     ///     4:2:0, 60 fps, a lower start bitrate, and one lighter refinement instead of a near-lossless one.
     init(peerKey: [UInt8], mode: DisplayMode, use444: Bool, adaptive: Bool, fec: Bool, clientCursor: Bool, mirror: Bool,
-         remote: Bool = false, continuing: (frameId: UInt32, generation: UInt16)? = nil, server: HostSessionServer) async throws {
+         remote: Bool = false, continuing: (frameId: UInt32, generation: UInt16)? = nil,
+         window windowID: CGWindowID? = nil, fpsCap: UInt16 = 0, server: HostSessionServer) async throws {
         self.peerKey = peerKey
         self.mode = mode
         self.remote = remote
-        fps = remote ? min(Int(mode.refreshHz), 60) : Int(mode.refreshHz)
+        fps = FrameRateRequest.effective(modeHz: remote ? min(Int(mode.refreshHz), 60) : Int(mode.refreshHz), cap: fpsCap)
         let testPattern = ProcessInfo.processInfo.environment["CLAMSHELL_TEST_PATTERN"] == "1"
         guard testPattern || CGPreflightScreenCaptureAccess() else { throw StartError.noScreenRecording }
         let w: Int, h: Int
-        if mirror, let main = Self.realDisplay() {
+        if let windowID, !testPattern {
+            // One window (1.8): at its own pixels, scaled down to fit the phone's picture (never up).
+            guard let info = WindowSources.info(windowID), let display = WindowSources.display(for: info.frame) else { throw StartError.windowGone }
+            let (pw, _) = Self.pixelSize(display)
+            let backing = max(1, Double(pw) / max(CGDisplayBounds(display).width, 1))
+            let ww = info.frame.width * backing, wh = info.frame.height * backing
+            var fit = min(Double(mode.widthPixels) / ww, Double(mode.heightPixels) / wh, 1)
+            if remote { fit = min(fit, Double(Self.remoteMaxWidth) / ww) }
+            w = max(Int(ww * fit) & ~1, 64)
+            h = max(Int(wh * fit) & ~1, 64)
+            displayID = display
+            virtualDisplay = nil
+            mirroring = true
+            window = StreamedWindow(id: windowID, frame: info.frame, title: info.title, app: info.app)
+        } else if mirror, let main = Self.realDisplay() {
             // The whole Mac: its main display, scaled down to fit the phone's largest posture (never up).
             let (pw, ph) = Self.pixelSize(main)
             var fit = min(Double(mode.widthPixels) / Double(pw), Double(mode.heightPixels) / Double(ph), 1)
@@ -771,6 +989,7 @@ final class StreamSession {
             displayID = main
             virtualDisplay = nil
             mirroring = true
+            window = nil
         } else {
             w = Int(mode.widthPixels)
             h = Int(mode.heightPixels)
@@ -780,6 +999,7 @@ final class StreamSession {
             displayID = v.displayID
             virtualDisplay = v
             mirroring = false
+            window = nil
         }
         width = w
         height = h
@@ -842,7 +1062,7 @@ final class StreamSession {
             return
         }
         // 4:4:4 needs full chroma from SCK, so BGRA (the pipeline converts to 444v); 4:2:0 takes 420v as is.
-        try await capture.start(displayID: displayID, width: w, height: h, fps: fps, showsCursor: !clientCursor,
+        try await capture.start(displayID: displayID, windowID: window?.id, width: w, height: h, fps: fps, showsCursor: !clientCursor,
                                 pixelFormat: use444 ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
     }
 
@@ -960,8 +1180,13 @@ final class StreamSession {
     }
 
     enum StartError: Error, CustomStringConvertible {
-        case noScreenRecording
-        var description: String { "Screen Recording is not allowed for Clamshell Host (System Settings › Privacy & Security)" }
+        case noScreenRecording, windowGone
+        var description: String {
+            switch self {
+            case .noScreenRecording: "Screen Recording is not allowed for Clamshell Host (System Settings › Privacy & Security)"
+            case .windowGone: "the window closed"
+            }
+        }
     }
 }
 

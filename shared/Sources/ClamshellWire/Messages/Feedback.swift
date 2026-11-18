@@ -112,10 +112,20 @@ public struct HostState: WireMessage {
     public var inputAllowed: Bool?
     /// 1.5: someone is using the Mac's own keyboard or mouse, so the phone's input is paused (T9).
     public var localUser: Bool
+    /// 1.8: whether the Mac can pass the phone's microphone on (its Clamshell Microphone device is installed).
+    /// nil from older Macs.
+    public var micReady: Bool?
+    /// 1.8: the window being streamed on its own ("App — Title"), nil for the whole screen.
+    public var window: String?
+    /// 1.8: the frame rate the Mac streams at now (after the phone's cap), 0 if not reported.
+    public var fps: UInt16
 
     public init(screen: MacScreenState, keepsAwake: Bool, targetBitrateKbps: UInt32, fecPercent: UInt8 = 0, inputAllowed: Bool? = nil,
-                localUser: Bool = false) {
+                localUser: Bool = false, micReady: Bool? = nil, window: String? = nil, fps: UInt16 = 0) {
         self.localUser = localUser
+        self.micReady = micReady
+        self.window = window
+        self.fps = fps
         self.screen = screen
         self.keepsAwake = keepsAwake
         self.targetBitrateKbps = targetBitrateKbps
@@ -131,11 +141,17 @@ public struct HostState: WireMessage {
         t.uint(4, UInt64(fecPercent))
         if let inputAllowed { t.bool(5, inputAllowed) }
         if localUser { t.bool(6, true) }
+        if let micReady { t.bool(7, micReady) }
+        if let window { t.string(8, window) }
+        if fps > 0 { t.uint(9, UInt64(fps)) }
         return t.bytes
     }
 
     public init(body: [UInt8]) throws {
-        let t = try TLVReader(body, knownTags: [1, 2, 3, 4, 5, 6])
+        let t = try TLVReader(body, knownTags: [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        micReady = try t.optionalUInt(7).map { $0 != 0 }
+        window = try t.optionalString(8)
+        fps = try (t.optionalUInt(9) ?? 0).narrowed(to: UInt16.self, field: "fps")
         inputAllowed = try t.optionalUInt(5).map { $0 != 0 }
         localUser = (try t.optionalUInt(6) ?? 0) != 0
         screen = MacScreenState(raw: try t.optionalUInt(1) ?? 1)

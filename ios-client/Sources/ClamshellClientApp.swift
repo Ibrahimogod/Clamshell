@@ -15,7 +15,13 @@ struct ClamshellClientApp: App {
                 .task {
                     if CommandLine.arguments.contains("--probe") { await DecodeProbe.printReport() }
                     client.startBrowsing()
+                    // Siri and Shortcuts hand the app their request directly (see AppLinks); one that came
+                    // in before this view existed waits here.
+                    AppLinks.handler = { client.open($0) }
+                    if let url = AppLinks.pending { AppLinks.pending = nil; client.open(url) }
+                    await AppExpiryWatch.scheduleReminder()
                 }
+                .onOpenURL { client.open($0) }
         }
     }
 }
@@ -50,21 +56,28 @@ struct ConnectView: View {
 
     var body: some View {
         Form {
+            if let warning = AppExpiryWatch.warningText() {
+                Section {
+                    Label(warning, systemImage: "calendar.badge.exclamationmark").font(.footnote).foregroundStyle(.orange)
+                }
+            }
             PairingSection(client: client)
             Section("Macs on this network") {
                 if client.hosts.isEmpty {
                     HStack { ProgressView(); Text("Looking for Clamshell Host…").foregroundStyle(.secondary) }
                 }
                 ForEach(client.hosts, id: \.name) { host in
+                    let paired = client.macs.contains { $0.name == host.name } || (client.macs.count == 1 && client.hosts.count == 1)
                     Button { client.connect(to: host) } label: {
                         HStack {
                             Image(systemName: "laptopcomputer")
                             Text(host.name)
                             Spacer()
                             if case .connecting(let name) = client.phase, name == host.name { ProgressView() }
+                            else if !paired { Text("not paired").font(.caption).foregroundStyle(.secondary) }
                         }
                     }
-                    .disabled(!client.isPaired)
+                    .disabled(!paired)
                 }
             }
             Section {
@@ -80,7 +93,7 @@ struct ConnectView: View {
                 Button("Connect to this address") { client.connectManual() }
                     .disabled(!client.isPaired || !client.manualAddressValid)
             } header: {
-                Text("Away from home")
+                Text(client.macs.count > 1 ? "Away from home: \(client.pairedMac?.name ?? "Mac")" : "Away from home")
             } footer: {
                 Text("Over cellular or another Wi-Fi the Mac can't be found automatically. Enter your home address and the UDP port forwarded to the Mac. The app also tries TLS on the TCP port (443) for networks that block UDP, and uses whichever answers first (docs/SETUP.md › Away from home).")
             }
@@ -114,11 +127,26 @@ struct ConnectView: View {
             } footer: {
                 Text("On the Mac, turn on Clamshell Host › Flash square. Stand this phone 20–40 cm from the Mac with its rear camera facing the Mac's screen, then connect. The result appears in the HUD.")
             }
-            Section("This phone") {
+            Section {
                 LabeledContent("HEVC 4:4:4 decode", value: client.hevc444Text)
                 Toggle("Touch ID before connecting", isOn: $client.requireBiometrics)
                 Toggle("Play the Mac's sound", isOn: $client.sound)
+                Picker("Battery & heat saver", selection: $client.powerSaver) {
+                    Text("Off").tag(PowerSaverMode.off)
+                    Text("Automatic").tag(PowerSaverMode.auto)
+                    Text("Always").tag(PowerSaverMode.always)
+                }
                 NavigationLink("Keyboard & trackpad") { DeckSettingsView(deck: $client.deck) }
+                NavigationLink { ReceivedFilesView(client: client) } label: {
+                    LabeledContent("Files from the Mac", value: client.receivedFiles.isEmpty ? "none" : "\(client.receivedFiles.count)")
+                }
+            } header: {
+                Text("This phone")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Battery & heat saver: Automatic streams at 60 fps on battery or when the phone is warm and 30 in Low Power Mode or when it's hot, full rate on the charger. Always keeps it at 60 (30 in Low Power Mode).")
+                    if let summary = AppExpiryWatch.summary { Text(summary) }
+                }
             }
         }
         .navigationTitle("Clamshell")
@@ -129,13 +157,18 @@ struct PairingSection: View {
     @Bindable var client: ClientController
     @State private var code = ""
     @State private var scanning = false
+    @State private var adding = false
 
     var body: some View {
         Section {
-            if let mac = client.pairedMac {
-                LabeledContent("Paired with", value: mac.name.isEmpty ? "Mac" : mac.name)
-                Button("Forget this Mac", role: .destructive) { client.forgetMac() }
-            } else {
+            ForEach(client.macs, id: \.publicKey) { mac in
+                MacRow(client: client, mac: mac)
+                    .swipeActions { Button("Forget", role: .destructive) { client.forgetMac(mac) } }
+            }
+            if client.isPaired, !adding, client.pairingStatus == .idle {
+                Button("Pair another Mac…") { adding = true; code = "" }
+            }
+            if !client.isPaired || adding || client.pairingStatus != .idle {
                 switch client.pairingStatus {
                 case .working:
                     HStack { ProgressView(); Text("Talking to the Mac…").foregroundStyle(.secondary) }
@@ -154,16 +187,20 @@ struct PairingSection: View {
                         .autocorrectionDisabled()
                     Button("Pair with this code") { client.pair(code: code) }
                         .disabled(PairingInvite(string: code) == nil)
+                    if adding { Button("Cancel", role: .cancel) { adding = false; client.cancelPairingMessage() } }
                     if case .failed(let m) = client.pairingStatus { Text(m).font(.footnote).foregroundStyle(.red) }
                 }
             }
         } header: {
-            Text("Pairing")
+            Text(client.macs.count > 1 ? "Your Macs" : "Pairing")
         } footer: {
-            if !client.isPaired {
+            if !client.isPaired || adding {
                 Text("At home, on the Mac's Wi-Fi: Clamshell Host › Pair new iPhone…, then scan the code or type it here. You confirm 6 digits on the Mac. Pairing happens only on your network; nothing goes through a server.")
+            } else if client.macs.count > 1 {
+                Text("Tap a Mac to choose it for the away-from-home address below; swipe left to forget it.")
             }
         }
+        .onChange(of: client.macs.count) { _, _ in adding = false; code = "" }
         .sheet(isPresented: $scanning) {
             QRScanner { text in
                 scanning = false
@@ -171,6 +208,65 @@ struct PairingSection: View {
             }
             .ignoresSafeArea()
         }
+    }
+}
+
+/// One paired Mac: tap to choose it, Connect to connect, swipe to forget.
+struct MacRow: View {
+    @Bindable var client: ClientController
+    let mac: PairedMac
+
+    var body: some View {
+        let selected = mac.publicKey == client.pairedMac?.publicKey
+        let here = client.lanHost(for: mac) != nil
+        HStack {
+            Button { client.select(mac) } label: {
+                HStack {
+                    Image(systemName: selected && client.macs.count > 1 ? "checkmark.circle.fill" : "laptopcomputer")
+                        .foregroundStyle(selected ? Color.accentColor : .secondary)
+                    VStack(alignment: .leading) {
+                        Text(mac.name.isEmpty ? "Mac" : mac.name).foregroundStyle(.primary)
+                        Text(here ? "On this Wi-Fi" : client.awayAddress(of: mac).isEmpty ? "Not on this Wi-Fi, no away address" : "Away: " + client.awayAddress(of: mac))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            if case .connecting = client.phase, selected {
+                ProgressView()
+            } else {
+                Button("Connect") { client.connect(mac: mac) }
+                    .buttonStyle(.borderless)
+                    .disabled(!client.canConnect(mac) || client.phase != .idle && !isFailed)
+            }
+        }
+        .contextMenu { Button("Forget this Mac", role: .destructive) { client.forgetMac(mac) } }
+    }
+
+    private var isFailed: Bool { if case .failed = client.phase { true } else { false } }
+}
+
+/// Files › On My iPhone › Clamshell › From Mac, listed in the app with share and delete.
+struct ReceivedFilesView: View {
+    @Bindable var client: ClientController
+
+    var body: some View {
+        List {
+            if client.receivedFiles.isEmpty {
+                Text("Nothing yet. On the Mac: Clamshell Host › Send a File to the iPhone…, or right-click a file in Finder › Services › Send to iPhone with Clamshell, while the phone is connected.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(client.receivedFiles, id: \.self) { url in
+                ShareLink(item: url) {
+                    Label(url.lastPathComponent, systemImage: "doc")
+                }
+                .swipeActions { Button("Delete", role: .destructive) { client.deleteReceived(url) } }
+            }
+        }
+        .navigationTitle("Files from the Mac")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { client.refreshReceivedFiles() }
     }
 }
 
@@ -365,6 +461,7 @@ struct SeamBar: View {
     @Binding var showKeyboard: Bool
     @State private var pickingFile = false
     @State private var deckSettings = false
+    @State private var pickingWindow = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -382,6 +479,20 @@ struct SeamBar: View {
             if client.macCaps.contains(.filesV1) {
                 Button { pickingFile = true } label: { Image(systemName: "square.and.arrow.up.on.square") }
                     .accessibilityLabel("Send a file to the Mac's Downloads")
+            }
+            if let file = client.lastReceivedFile {
+                ShareLink(item: file) { Image(systemName: "tray.and.arrow.down") }
+                    .accessibilityLabel("Share the file the Mac sent")
+            }
+            if client.macCaps.contains(.windowStreaming) {
+                Button { client.requestWindows(); pickingWindow = true } label: {
+                    Image(systemName: client.hud.window == nil ? "macwindow" : "macwindow.badge.plus")
+                }
+                .accessibilityLabel("Stream one window")
+            }
+            if client.macCaps.contains(.micOpus) {
+                Button { client.setMic(!client.micOn) } label: { Image(systemName: client.micOn ? "mic.fill" : "mic.slash") }
+                    .accessibilityLabel(client.micOn ? "Turn the microphone off" : "Use this phone's microphone on the Mac")
             }
             Button { showKeyboard.toggle() } label: { Image(systemName: showKeyboard ? "keyboard.chevron.compact.down" : "keyboard") }
                 .accessibilityLabel(showKeyboard ? "Hide keyboard" : "Show keyboard")
@@ -402,6 +513,53 @@ struct SeamBar: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { deckSettings = false } } }
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $pickingWindow) {
+            NavigationStack {
+                WindowPicker(client: client) { pickingWindow = false }
+            }
+            .presentationDetents([.medium, .large])
+        }
+    }
+}
+
+/// Stream one of the Mac's windows on its own, sized to the phone, or the whole screen again.
+struct WindowPicker: View {
+    @Bindable var client: ClientController
+    let done: () -> Void
+    @State private var fit = true
+
+    var body: some View {
+        List {
+            Section {
+                Button { client.stream(window: nil); done() } label: {
+                    Label("The whole screen", systemImage: client.hud.window == nil ? "checkmark" : "display")
+                }
+                Toggle("Resize the window to fit the phone", isOn: $fit)
+            }
+            Section {
+                if client.loadingWindows { HStack { ProgressView(); Text("Asking the Mac…").foregroundStyle(.secondary) } }
+                else if client.windowsTimedOut { Text("The Mac didn't answer. Tap Refresh.").foregroundStyle(.secondary) }
+                else if client.windows.isEmpty { Text("No windows to show.").foregroundStyle(.secondary) }
+                ForEach(client.windows) { w in
+                    Button { client.stream(window: w, fit: fit); done() } label: {
+                        VStack(alignment: .leading) {
+                            Text(w.title.isEmpty ? w.app : w.title).lineLimit(1)
+                            Text("\(w.app) · \(w.width)×\(w.height)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } header: {
+                Text("Windows")
+            } footer: {
+                Text("Only that window is sent, so it fills the phone; the pointer and clicks stay inside it. Resizing gives 1:1 pixels; the window keeps that size afterwards.")
+            }
+        }
+        .navigationTitle("Show on the phone")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) }
+            ToolbarItem(placement: .topBarLeading) { Button("Refresh") { client.requestWindows() } }
         }
     }
 }
@@ -475,11 +633,15 @@ struct HUDView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(String(format: "%.0f fps shown · %.0f decoded · %.1f Mbit/s · %@", hud.presentedFps, hud.decodedFps, hud.mbps, hud.chroma))
             Text(String(format: "encode %.1f ms (Mac) · decode %.1f ms · keyframes %d · refine %d", hud.encodeMs, hud.decodeMs, hud.keyframes, hud.refinements))
-            Text("drops: \(hud.framesLost) lost · \(hud.hostDrops) encoder · \(hud.hostSkipped) busy")
+            // Skipped captures aren't lost: a newer picture replaced them before the encoder was free.
+            Text("drops: \(hud.framesLost) lost · \(hud.hostDrops) encoder · skipped \(hud.hostSkipped) (newer picture sent)")
             Text("net: " + [hud.rateText.isEmpty ? nil : hud.rateText, hud.rttMs.map { String(format: "rtt %.0f ms", $0) },
                             hud.migrations > 0 ? "path changes \(hud.migrations)" : nil].compactMap { $0 }.joined(separator: " · "))
             Text(hud.latencyText)
             if let glass = hud.glassText { Text(glass) }
+            let extras = [hud.macFps > 0 ? "Mac sends \(hud.macFps) fps" : nil, hud.window.map { "window: \($0)" },
+                          hud.micReady == true ? "mic ready" : nil].compactMap { $0 }
+            if !extras.isEmpty { Text(extras.joined(separator: " · ")) }
         }
         .font(.caption2.monospaced())
         .foregroundStyle(.white)

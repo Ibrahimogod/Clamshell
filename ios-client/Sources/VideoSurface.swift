@@ -91,6 +91,12 @@ final class VideoLayerView: UIView {
     func stop() { link?.invalidate(); link = nil }
 
     @objc private func tick(_ link: CADisplayLink) {
+        // The battery saver (1.1): refresh no faster than the Mac sends.
+        let fps = client.displayFps
+        if fps != linkFps {
+            linkFps = fps
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, fps), maximum: max(fps, 60), preferred: fps)
+        }
         if directTouch, touch.isPending { feed(lastPoints) }      // a finger held still: the 0.5 s right click
         guard let renderer else { return }
         var pic = client.pipeline?.latest.take()
@@ -117,6 +123,7 @@ final class VideoLayerView: UIView {
 
     /// The latest picture's size in pixels.
     private var pixels = CGSize.zero
+    private var linkFps: Float = 120
 
     private func layoutPicture() {
         guard pixels.width > 0, pixels.height > 0 else { return }

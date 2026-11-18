@@ -21,6 +21,14 @@ public struct Capabilities: OptionSet, Sendable, Hashable {
     public static let inputV1 = Capabilities(rawValue: 1 << 12)
     /// Protocol 1.2: the cursor is drawn by the phone from `CursorShape`/`CursorPosition` (ADR-0009).
     public static let clientCursor = Capabilities(rawValue: 1 << 13)
+    /// 1.8: the phone takes files from the Mac (`FileOffer`, Mac → phone) into its Files app.
+    public static let filesToPhone = Capabilities(rawValue: 1 << 14)
+    /// 1.8: the phone's microphone as `AudioPacket`s on the audio channel, phone → Mac.
+    public static let micOpus = Capabilities(rawValue: 1 << 15)
+    /// 1.8: one window instead of the whole screen (`WindowListRequest`, `WindowList`, `SourceRequest`).
+    public static let windowStreaming = Capabilities(rawValue: 1 << 16)
+    /// 1.8: the phone caps the frame rate (`FrameRateRequest`), for its battery and heat saver.
+    public static let frameRateCap = Capabilities(rawValue: 1 << 17)
 }
 
 /// A display mode the client can show at 1:1 pixels (ADR-0007).
@@ -80,7 +88,8 @@ public struct Hello: WireMessage {
         static let maxFps: UInt64 = 7
         static let deviceName: UInt64 = 8
         static let connectionId: UInt64 = 9
-        static let all: Set<UInt64> = [protoMajor, protoMinor, appVersion, build, capabilities, displayMode, maxFps, deviceName, connectionId]
+        static let appExpires: UInt64 = 10
+        static let all: Set<UInt64> = [protoMajor, protoMinor, appVersion, build, capabilities, displayMode, maxFps, deviceName, connectionId, appExpires]
     }
 
     public var protoMajor: UInt16
@@ -94,10 +103,15 @@ public struct Hello: WireMessage {
     /// 1.7: a random number the phone picks for each connection and keeps across its rekeys, so the Mac can
     /// tell a reconnect (start the session afresh) from a rekey of the running one. nil from older phones.
     public var connectionId: UInt64?
+    /// 1.8: when the phone app's signature runs out (Unix seconds), so the Mac can warn too. nil when the
+    /// app doesn't expire (App Store, TestFlight) or from older phones.
+    public var appExpires: UInt64?
 
     public init(protoMajor: UInt16 = ProtocolVersion.major, protoMinor: UInt16 = ProtocolVersion.minor,
                 appVersion: String, build: UInt32, capabilities: Capabilities,
-                displayModes: [DisplayMode] = [], maxFps: UInt16 = 120, deviceName: String, connectionId: UInt64? = nil) {
+                displayModes: [DisplayMode] = [], maxFps: UInt16 = 120, deviceName: String, connectionId: UInt64? = nil,
+                appExpires: UInt64? = nil) {
+        self.appExpires = appExpires
         self.protoMajor = protoMajor
         self.protoMinor = protoMinor
         self.appVersion = appVersion
@@ -120,6 +134,7 @@ public struct Hello: WireMessage {
         t.uint(Tag.maxFps, UInt64(maxFps))
         t.string(Tag.deviceName, deviceName)
         if let connectionId { t.uint(Tag.connectionId, connectionId) }
+        if let appExpires { t.uint(Tag.appExpires, appExpires) }
         return t.bytes
     }
 
@@ -134,6 +149,7 @@ public struct Hello: WireMessage {
         maxFps = try (t.optionalUInt(Tag.maxFps) ?? 60).narrowed(to: UInt16.self, field: "maxFps")
         deviceName = try t.optionalString(Tag.deviceName) ?? ""
         connectionId = try t.optionalUInt(Tag.connectionId)
+        appExpires = try t.optionalUInt(Tag.appExpires)
     }
 }
 

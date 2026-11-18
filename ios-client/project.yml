@@ -17,6 +17,7 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Intents
       - path: Probes
         type: folder
         buildPhase: resources
@@ -24,6 +25,8 @@ targets:
         buildPhase: resources
       - path: Resources/Assets.xcassets       # app icon (tools/scripts/make-icons.swift)
     dependencies:
+      - target: ClamshellWidget
+        embed: true
       - package: ClamshellKit
         products: [ClamshellWire, ClamshellSession, ClamshellTransport, ClamshellStream, ClamshellVideo,
                    ClamshellCodec, ClamshellRateControl, ClamshellKeychain, ClamshellBench, ClamshellInput]
@@ -42,20 +45,53 @@ targets:
         NSBonjourServices: [_clamshell._udp]
         NSCameraUsageDescription: To scan the pairing code your Mac shows, and for the optional latency test (the rear camera watches a flashing square on the Mac's screen). Nothing is recorded or sent.
         NSFaceIDUsageDescription: Clamshell asks for your fingerprint or face before it connects to your Mac.
+        NSMicrophoneUsageDescription: Only when you turn on the microphone button while connected, the phone's microphone becomes the Mac's "Clamshell Microphone" input (end-to-end encrypted, never recorded on the phone).
+        # Files the Mac sends land in Documents/From Mac, which Files shows under On My iPhone › Clamshell.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        # Siri, Shortcuts, the widget and the Control Center control open clamshell://connect.
+        CFBundleURLTypes:
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleURLSchemes: [clamshell]
         # The app does its own end-to-end encryption (Noise over CryptoKit: X25519, ChaCha20-Poly1305,
         # SHA-256), so it is not the HTTPS-only exemption. See docs/app-store.md for the export answers.
         ITSAppUsesNonExemptEncryption: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).client
-        MARKETING_VERSION: 1.0.2
-        CURRENT_PROJECT_VERSION: 4
+        MARKETING_VERSION: 1.1.0
+        CURRENT_PROJECT_VERSION: 7
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         GENERATE_INFOPLIST_FILE: NO
+  ClamshellWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widget
+      - Intents
+    info:
+      path: Generated/Widget-Info.plist
+      properties:
+        CFBundleDisplayName: Clamshell
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).client.widget
+        MARKETING_VERSION: 1.1.0
+        CURRENT_PROJECT_VERSION: 7
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
 schemes:
   Clamshell:
     build:

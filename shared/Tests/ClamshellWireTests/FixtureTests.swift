@@ -5,7 +5,7 @@ import Testing
 /// Golden-byte fixtures for protocol v1.0 (ADR-0011 §4). Each file holds the hex of one encoded
 /// inner message. Once committed, a fixture must never change: a new layout gets a new message type
 /// and a new fixture. To create fixtures for *new* messages only, run
-/// `CLAMSHELL_WRITE_FIXTURES=1 swift test --filter Fixtures` and review the diff.
+/// `CLAMSHELL_WRITE_FIXTURES=1 swift test --filter FixtureTests` and review the diff.
 @Suite("Fixtures v1.0")
 struct FixtureTests {
     struct Sample: Sendable {
@@ -67,7 +67,25 @@ struct FixtureTests {
         Sample(name: "audio_packet", message: AudioPacket(seq: 7, captureNs: 1_000_000, data: [0xFC, 0xFF, 0xFE]).message) {
             let p = try AudioPacket($0); return p.seq == 7 && p.captureNs == 1_000_000 && p.data == [0xFC, 0xFF, 0xFE]
         },
+        // Protocol 1.8: frame-rate cap, window streaming, app expiry, host state with mic/window/fps.
+        Sample(name: "frame_rate_request", message: FrameRateRequest(maxFps: 60).message) { try FrameRateRequest($0).maxFps == 60 },
+        Sample(name: "window_list_request", message: WindowListRequest().message) { _ = try WindowListRequest($0); return true },
+        Sample(name: "window_list", message: FixtureTests.windows.message) { try WindowList($0).windows == FixtureTests.windows.windows },
+        Sample(name: "source_request", message: SourceRequest(windowId: 4242, fit: true).message) {
+            let r = try SourceRequest($0); return r.windowId == 4242 && r.fit
+        },
+        Sample(name: "hello_1_8", message: FixtureTests.hello18.message) { try Hello($0) == FixtureTests.hello18 },
+        Sample(name: "host_state_1_8", message: FixtureTests.hostState18.message) { try HostState($0) == FixtureTests.hostState18 },
     ]
+
+    static let windows = WindowList(windows: [
+        StreamableWindow(id: 4242, app: "Xcode", title: "Clamshell — HostController.swift", width: 1512, height: 944),
+        StreamableWindow(id: 77, app: "Notes", title: "", width: 800, height: 600),
+    ])
+    static let hello18 = Hello(protoMinor: 8, appVersion: "1.1.0", build: 7, capabilities: [.hevc444Decode, .filesToPhone, .micOpus, .windowStreaming, .frameRateCap],
+                               maxFps: 60, deviceName: "iPhone", connectionId: 0xC1A5_0000_0001, appExpires: 1_795_500_000)
+    static let hostState18 = HostState(screen: .active, keepsAwake: true, targetBitrateKbps: 12_000, inputAllowed: true,
+                                       micReady: true, window: "Xcode — HostController.swift", fps: 60)
 
     static let home = HomeEndpoint(host: "home.example.net", udpPort: 51820, tcpPort: 443, observedAt: 1_795_000_000, seq: 7)
 

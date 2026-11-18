@@ -59,6 +59,10 @@ struct HostMenu: View {
             Toggle("Sync clipboard with the phone", isOn: Binding(get: { host.clipboardSync }, set: { host.clipboardSync = $0 }))
             Toggle("Play this Mac's sound on the phone", isOn: Binding(get: { host.streamSound }, set: { host.streamSound = $0 }))
             Toggle("Accept files from the phone (to Downloads)", isOn: Binding(get: { host.acceptFiles }, set: { host.acceptFiles = $0 }))
+            if host.canSendFiles {
+                Button("Send a File to the iPhone…") { host.chooseFilesForPhone() }
+                    .help("Or in Finder: right-click files › Services › Send to iPhone with Clamshell.")
+            }
             if !host.lastFileNote.isEmpty { Text(host.lastFileNote).font(.caption).foregroundStyle(.secondary) }
             Toggle("Keep this Mac awake while plugged in", isOn: Binding(get: { host.keepAwakeOnAC }, set: { host.keepAwakeOnAC = $0 }))
             Toggle("Open at login", isOn: Binding(get: { _ = host.loginItemTick; return host.openAtLogin }, set: { host.openAtLogin = $0 }))
@@ -83,15 +87,30 @@ struct HostMenu: View {
             }
 
             Divider()
+            HStack {
+                Image(systemName: host.micDriverInstalled ? "mic" : "mic.slash").foregroundStyle(.secondary)
+                Text(host.micDriverInstalled ? "Clamshell Microphone is installed: pick it as the input in your app to use the phone's mic."
+                                             : "For the phone's microphone on this Mac, install Clamshell Microphone: run tools/scripts/install-microphone.sh in Terminal.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Divider()
             Text("Paired phones").font(.caption).foregroundStyle(.secondary)
             if host.devices.isEmpty { Text("None yet. Pair one at home, on this Wi-Fi.").font(.callout) }
             ForEach(host.devices) { d in
-                HStack {
-                    Text(d.name.isEmpty ? "iPhone" : d.name).font(.callout)
-                    Text(d.created, format: .dateTime.day().month()).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Revoke") { Task { await host.revoke(d) } }
-                        .help("Removes this phone; its session ends now and it must pair again at home.")
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack {
+                        Text(d.name.isEmpty ? "iPhone" : d.name).font(.callout)
+                        Text(d.created, format: .dateTime.day().month()).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Revoke") { Task { await host.revoke(d) } }
+                            .help("Removes this phone; its session ends now and it must pair again at home.")
+                    }
+                    let _ = host.expiryTick
+                    if let note = PhoneAppExpiry.text([UInt8](d.publicKey)) {
+                        Text(note).font(.caption)
+                            .foregroundStyle(PhoneAppExpiry.isUrgent([UInt8](d.publicKey)) ? Color.orange : Color.secondary)
+                    }
                 }
             }
             HStack {
