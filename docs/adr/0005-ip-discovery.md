@@ -1,6 +1,6 @@
 # ADR-0005: Learn the home IP on home Wi-Fi + manual fallback; log IP churn
 
-**Status:** Accepted, amended 2026-11-20 (router readout built; DuckDNS name added; the Mac opens its own port forwards over UPnP, see the two amendments) · **Date:** 2026-11-15
+**Status:** Accepted, amended 2026-11-20 and 2026-11-21 (DuckDNS name added; the Mac opens its own port forwards over UPnP; the address is read over UPnP and the router-page readout is removed, see the three amendments) · **Date:** 2026-11-15
 
 ## Context
 WE VDSL usually assigns a dynamic public IP. It changes when the router reconnects, or on the ISP's schedule. The phone must find the Mac without ngrok, DDNS services or any other third party (constraint #1).
@@ -85,7 +85,7 @@ open them itself. **This reverses "no UPnP" from the original brief, by your dec
 in the VR400.
 
 **Built:** the Mac finds the router's Internet Gateway Device with an SSDP search (sent to the gateway and to
-239.255.255.250), then asks its `WANIPConnection` service (or `WANPPPConnection`) for UDP 51820 and TCP 443 →
+239.255.255.250), then asks its `WANIPConnection` service (or `WANPPPConnection`) for UDP 443 and TCP 443 →
 this Mac, named "Clamshell", with a one-hour lease. It renews every 30 minutes and at once when the Mac's own
 LAN address changes, so a forward never outlives the Mac by more than an hour. While remote access is paused,
 or with the switch off (Home address… window, UserDefaults `upnpPortMapping`), it removes its own mappings.
@@ -99,5 +99,22 @@ without a password, Clamshell's included. That was the reason for "UPnP off". Th
 and forwards that follow the Mac. To go back: switch it off in Home address…, turn UPnP off in the router
 (NAT Forwarding › UPnP) and forward the two ports by hand (SETUP §6).
 
-**Not used:** UPnP's `GetExternalIPAddress`. The router readout and NAT-PMP stay the address source.
+**Not used at first:** UPnP's `GetExternalIPAddress`; the router readout and NAT-PMP stayed the address source. Amendment 3 changes that.
 
+## Amendment 3 (2026-11-21): the address comes over UPnP; the router-page readout is gone
+
+**What changed.** After a router restart (new public address, new LAN address for the Mac) the Mac did
+everything right, yet the phone couldn't connect on mobile data. Looking at it, you found the setup too
+complicated and asked to simplify it. With UPnP already on, the router hands out its public address on the
+same service that opens the ports (`GetExternalIPAddress`), with no password. So:
+
+- **Removed:** signing in to the VR400's web page with the admin password (its AES/RSA/MD5 login, the
+  "someone is signed in" and wrong-password handling) and the NAT-PMP query. The saved password is deleted
+  from the Keychain at the next launch.
+- **Now:** once a minute the Mac asks the router over UPnP for its public address; a new one is logged,
+  notified and pushed to the DuckDNS name as before. With UPnP off in the router there is no automatic
+  address (the window and the menu say so); the pairing window's typed address is the fallback.
+
+**The actual fault** was on the phone: while connecting it sends a fresh handshake every 500 ms and only
+accepted an answer to the newest, so on a path slower than half a second every answer was discarded. It now
+accepts an answer to any of its last 16 handshakes (`ClientSessionConnection`, test `handshakeOverASlowPath`).

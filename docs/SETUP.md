@@ -134,27 +134,24 @@ through networks that only allow web traffic), and uses whichever answers first.
 
 1. **Fix the Mac's UDP port** (otherwise it's random at each launch), then quit and reopen the host:
    ```bash
-   defaults write <your prefix>.host udpPort -int 51820
+   defaults write <your prefix>.host udpPort -int 443
    ```
 2. **Open the ports on the router.** Either way, keep the router's own **remote management off** (it would
    otherwise want port 443).
    - **Automatically (UPnP, the default):** turn UPnP on in the router (TP-Link Archer: Advanced › NAT
-     Forwarding › UPnP). The Mac asks the router for UDP 51820 and TCP 443 itself, renews that every 30
+     Forwarding › UPnP). The Mac asks the router for UDP 443 and TCP 443 itself, renews that every 30
      minutes, and follows its own address when that changes. The **Port forwarding** line in **Home
      address…** says what's open. Delete any forwards for these ports you made by hand earlier (Virtual
      Servers): on the Archer they win over the Mac's and stay on the old address. The catch: with UPnP on, any device on your network can open ports
      without a password (ADR-0005, amendment 2).
    - **By hand:** switch **Open the ports on the router automatically** off in **Home address…**, turn UPnP
-     off in the router, give the Mac a fixed LAN address (a DHCP reservation), and forward UDP 51820 and TCP
+     off in the router, give the Mac a fixed LAN address (a DHCP reservation), and forward UDP 443 and TCP
      443 to it (Archer: Advanced › NAT Forwarding › Virtual Servers). On the Mac, set the network's
      **Private Wi-Fi address** to **Fixed** (System Settings › Wi-Fi › Details…), or the reservation stops
      matching when macOS picks a new one.
 3. **The public address and a name for it** (menu › **Home address…**):
-   - **Router password:** type the router's admin password and **Save**. Once a minute the Mac signs in to
-     the router page, reads the public address and signs out again. It waits while you're signed in there
-     yourself. It's kept in the Mac's Keychain and only sent to the router. If the router turns it down,
-     the Mac stops trying (so the router page doesn't lock) until you save it again. Without a password,
-     the Mac asks the router over NAT-PMP every 10 minutes, which many routers don't answer.
+   - **The public address** comes from the router over UPnP, once a minute (no router password). The
+     window shows it as `Router (UPnP): <address>`; if UPnP is off in the router it says so.
    - **DuckDNS name (recommended, free):** so the phone still finds the Mac after the address changes.
      1. Go to [duckdns.org](https://www.duckdns.org) and sign in (Google, GitHub, Reddit or X).
      2. Under **domains**, type a name (e.g. `myhome`) and **add domain**.
@@ -169,7 +166,7 @@ through networks that only allow web traffic), and uses whichever answers first.
    - If the address starts with 100.64–100.127, your ISP uses carrier-grade NAT and nothing can reach your
      Mac from outside without a relay server, which this project deliberately doesn't use.
 4. The phone learns the address (or the DuckDNS name) when it pairs and again at every session, and fills
-   **Away from home** itself. Phones paired before you set up the name pick it up at their next session; you can also type the name or address there yourself (the port can be left out: UDP 51820). On the phone, **Check connection** tries each path
+   **Away from home** itself. Phones paired before you set up the name pick it up at their next session; you can also type the name or address there yourself (the port can be left out: UDP 443). On the phone, **Check connection** tries each path
    on its own and shows which answer.
 
 Away from home the Mac sends a lighter stream (at most 1600 px wide, 60 Hz, starting at 3 Mbit/s and adapting

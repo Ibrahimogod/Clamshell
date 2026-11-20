@@ -41,8 +41,8 @@ struct HostMenu: View {
             Text(host.statusText).font(.callout).foregroundStyle(.secondary)
             if !host.edgeText.isEmpty { Text(host.edgeText).font(.caption).foregroundStyle(.secondary) }
             Text(host.publicAddressText).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            if !host.publicAddress.routerStatus.isEmpty, !host.publicAddress.routerStatus.hasPrefix("Router: \(host.publicAddress.learned ?? "-")") {
-                Text(host.publicAddress.routerStatus).font(.caption).foregroundStyle(.orange)
+            if !host.publicAddress.problem.isEmpty {
+                Text(host.publicAddress.problem).font(.caption).foregroundStyle(.orange)
             }
             if !host.portForwarder.problem.isEmpty {
                 Text("Port forwarding: " + host.portForwarder.problem).font(.caption).foregroundStyle(.orange)

@@ -49,7 +49,7 @@ final class HostController {
         guard let a = publicAddress.effective else { return "Public address: unknown (set it up under Home address…)" }
         let n = publicAddress.changesLast30Days
         let ip = publicAddress.ip.map { $0 == a ? "" : " (\($0))" } ?? ""
-        return "Public address: \(a)\(ip)" + (publicAddress.learned != nil ? " · from the \(publicAddress.source)" : "")
+        return "Public address: \(a)\(ip)" + (publicAddress.learned != nil ? " · from the router" : "")
             + (n > 0 ? " · changed \(n)× in 30 days" : "")
     }
 
@@ -221,8 +221,8 @@ final class HostController {
         publicAddress.onChange = { [weak self] _ in
             Task { await self?.sendHomeEndpoint() }
         }
-        publicAddress.start()
         portForwarder.start()
+        publicAddress.start { [portForwarder] in await portForwarder.publicAddress() }
         layoutObserver = KeyboardLayouts.observe { [weak self] in self?.sendKeyboardLayout() }
         let service = SendToPhoneService { [weak self] urls in self?.sendFilesToPhone(urls) ?? "" }
         self.service = service
@@ -252,7 +252,7 @@ final class HostController {
         guard let s = session, let server, peerMinor >= 3, let host = publicAddress.effective else { return }
         let tcp = UInt16(UserDefaults.standard.integer(forKey: "tcpPort")).nonZero ?? 443
         let now = UInt64(Date().timeIntervalSince1970)
-        let msg = HomeEndpoint(host: host, udpPort: await server.boundPort ?? 51820, tcpPort: edge == nil ? 0 : tcp, observedAt: now, seq: now)
+        let msg = HomeEndpoint(host: host, udpPort: await server.boundPort ?? 443, tcpPort: edge == nil ? 0 : tcp, observedAt: now, seq: now)
         await server.send([msg.message], to: s.peerKey)
     }
 
@@ -284,7 +284,7 @@ final class HostController {
             return
         }
         if !skipAuth { guard await PairingSupport.authorize() else { return } }
-        let port = await server.boundPort ?? 51820
+        let port = await server.boundPort ?? 443
         let invite = PairingInvite(macPublicKey: await server.publicKey, secret: PairingInvite.newSecret(),
                                    macName: Host.current().localizedName ?? "Mac", port: port, addresses: PairingSupport.lanAddresses())
         await server.openPairing(invite)
@@ -321,7 +321,7 @@ final class HostController {
         let tcp = UInt16(UserDefaults.standard.integer(forKey: "tcpPort")).nonZero ?? 443
         let publicHost = publicAddress.effective ?? ""
         do {
-            let peer = try await server.confirmPairing(id, accept: PairingAccept(accepted: true, udpPort: await server.boundPort ?? 51820,
+            let peer = try await server.confirmPairing(id, accept: PairingAccept(accepted: true, udpPort: await server.boundPort ?? 443,
                                                                                   tcpPort: tcp, publicHost: publicHost))
             try deviceStore.add(peer)
             devices = deviceStore.devices

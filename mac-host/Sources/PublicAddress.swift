@@ -4,15 +4,11 @@ import CryptoKit
 import Foundation
 import Network
 import Observation
-import Synchronization
 import UserNotifications
 
 /// The Mac's public (router WAN) address and the name phones dial to reach it (ADR-0005):
-/// - with the router's admin password saved (Keychain), the Mac signs in to the TP-Link VR400's web UI
-///   once a minute, reads the WAN address and signs out again. It skips a round when someone is signed
-///   in there (signing in would throw them out) and stops for good after the router turns the password
-///   down, until a new one is saved (a few wrong tries lock the web UI);
-/// - otherwise it asks the router over NAT-PMP (RFC 6886) every 10 minutes, when the router answers it;
+/// - once a minute the Mac asks the router for its public address over UPnP (the same service that opens
+///   the ports, `PortForwarder`), so no router password is needed;
 /// - with a DuckDNS (or deSEC) name and token saved, every new address is pointed at by that name, and
 ///   the phone is given the name instead of the address, so it finds the Mac after a change on its own;
 /// - an address typed in the pairing window (UserDefaults `publicHost`) is the last resort.
@@ -22,40 +18,35 @@ import UserNotifications
 final class PublicAddressMonitor {
     /// The WAN address as last read from the router.
     private(set) var learned: String?
-    private(set) var source = ""
-    /// One line each for the settings window and the menu.
+    /// One line each for the settings window and the menu; `problem` is set when the address can't be read.
     private(set) var routerStatus = ""
+    private(set) var problem = ""
     private(set) var dnsStatus = ""
     /// Called with what phones should dial (`effective`) whenever that, or the address behind it, changes.
     var onChange: ((String) -> Void)?
     private var task: Task<Void, Never>?
+    private var read: (() async -> String?)?
     private let logURL: URL?
     private let keychain: KeychainStore?
 
-    private var routerPassword: String?
-    /// The router turned the saved password down: don't use it again until a new one is saved.
-    private var passwordRejected = false
-    private var routerFailures = 0
     private var dnsToken: String?
     private var dnsBlocked = false
     private var dnsNotBefore = Date.distantPast
-    private var lastNATPMP = Date.distantPast
     private var lastDNS: (ip: String, at: Date)?
 
-    static let routerPasswordAccount = "router-password"
     static let dnsTokenAccount = "dns-token"
 
     init(directory: URL?, keychain: KeychainStore?) {
         logURL = directory?.appendingPathComponent("ip-churn.json")
         self.keychain = keychain
-        routerPassword = Self.secret(keychain, Self.routerPasswordAccount)
         dnsToken = Self.secret(keychain, Self.dnsTokenAccount)
+        // Builds before 1.3 signed in to the router's web page with a saved admin password: don't keep it.
+        try? keychain?.delete("router-password")
     }
 
     var dnsName: String {
         DynamicDNS.normalize(UserDefaults.standard.string(forKey: "dnsHostname") ?? "")
     }
-    var hasRouterPassword: Bool { routerPassword != nil }
     var hasDNSToken: Bool { dnsToken != nil }
 
     private var manual: String {
@@ -73,7 +64,9 @@ final class PublicAddressMonitor {
     /// The home's address as a number, for telling home sessions from away ones.
     var ip: String? { learned ?? (IPv4(manual) != nil ? manual : nil) }
 
-    func start() {
+    /// - Parameter reading: asks the router for its public address (UPnP), nil when it doesn't answer.
+    func start(reading: @escaping () async -> String?) {
+        read = reading
         task?.cancel()
         task = Task { [weak self] in
             while !Task.isCancelled {
@@ -84,15 +77,6 @@ final class PublicAddressMonitor {
     }
 
     // MARK: settings
-
-    func saveRouterPassword(_ password: String) {
-        let p = password.isEmpty ? nil : password
-        store(p, Self.routerPasswordAccount)
-        routerPassword = p
-        passwordRejected = false
-        routerStatus = p == nil ? "" : "Router: password saved, reading…"
-        Task { await refresh() }
-    }
 
     func saveDNS(name: String, token: String?) {
         UserDefaults.standard.set(DynamicDNS.normalize(name), forKey: "dnsHostname")
@@ -115,53 +99,21 @@ final class PublicAddressMonitor {
 
     func refresh() async {
         let before = learned
-        if let password = routerPassword, !passwordRejected {
-            await readRouter(password)
-        } else if Date().timeIntervalSince(lastNATPMP) >= 600 {
-            lastNATPMP = .now
-            if let gw = await Self.gateway(), let ip = await Self.natpmpExternal(gateway: gw) {
-                source = "router (NAT-PMP)"
-                adopt(ip)
+        if let read {
+            if let text = await read(), let address = IPv4(text) {
+                problem = address.isPublic ? "" : address.isCarrierNAT
+                    ? "The router's address \(address) is carrier NAT (100.64/10): the ISP shares it, so phones can't reach this Mac from outside."
+                    : "The router's address \(address) isn't a public one."
+                routerStatus = problem.isEmpty ? "Router (UPnP): \(address)" : problem
+                adopt(address.description)
+            } else {
+                // Keep the last address: a router that's restarting answers again in a minute or two.
+                problem = "The router doesn't tell its public address over UPnP. Turn UPnP on in its settings (NAT Forwarding › UPnP)."
+                routerStatus = problem
             }
         }
         await updateDNS()
         if learned != before, let e = effective { onChange?(e) }
-    }
-
-    private func readRouter(_ password: String) async {
-        guard let gw = await Self.gateway() else { routerStatus = "Router: no network"; return }
-        let router = TPLinkRouter(host: gw) { print($0) }
-        do {
-            let reading = try await router.readWAN(password: password)
-            routerFailures = 0
-            source = "router"
-            routerStatus = "Router: \(reading.address)" + (reading.address.isPublic ? "" : reading.address.isCarrierNAT
-                ? " — carrier NAT (100.64/10): the ISP shares this address, port forwarding can't work"
-                : " — not a public address")
-            adopt(reading.address.description)
-        } catch RouterError.wrongPassword(let code) {
-            passwordRejected = true
-            routerStatus = "Router: the password was turned down (code \(code)). Type it again in Home address…"
-            print("router: password turned down (\(code)); not trying again until a new one is saved")
-            notify(id: "clamshell.router", title: "Router password not accepted",
-                   body: "Clamshell stopped signing in to the router so it doesn't get locked. Enter the password again under Home address….")
-        } catch let e as RouterError {
-            if case .someoneSignedIn = e {
-                if learned == nil { routerStatus = "Router: \(e)" }
-                return
-            }
-            failed("\(e)")
-        } catch {
-            failed(error.localizedDescription)
-        }
-    }
-
-    /// The VR400's web server now and then answers a request with HTTP 500. Keep showing the last good
-    /// reading through a few of those; only three failures in a row are worth showing (and logging).
-    private func failed(_ why: String) {
-        routerFailures += 1
-        if routerFailures == 3 || learned == nil { routerStatus = "Router: \(why)" }
-        if routerFailures == 3 { print("router: \(why) (3 reads in a row failed)") }
     }
 
     private func adopt(_ ip: String) {
@@ -276,32 +228,5 @@ final class PublicAddressMonitor {
             }
             return nil
         }.value
-    }
-
-    /// RFC 6886 §3.2: request `[0, 0]`, response `[0, 128, result(2), epoch(4), address(4)]`.
-    nonisolated static func natpmpExternal(gateway: String, timeout: Duration = .seconds(1)) async -> String? {
-        let c = NWConnection(host: NWEndpoint.Host(gateway), port: 5351, using: .udp)
-        let result = Mutex<CheckedContinuation<String?, Never>?>(nil)
-        @Sendable func finish(_ v: String?) {
-            result.withLock { k in k?.resume(returning: v); k = nil }
-            c.cancel()
-        }
-        return await withCheckedContinuation { (k: CheckedContinuation<String?, Never>) in
-            result.withLock { $0 = k }
-            c.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    c.send(content: Data([0, 0]), completion: .idempotent)
-                    c.receiveMessage { data, _, _, _ in
-                        guard let d = data.map([UInt8].init), d.count >= 12, d[0] == 0, d[1] == 128, d[2] == 0, d[3] == 0 else { finish(nil); return }
-                        finish("\(d[8]).\(d[9]).\(d[10]).\(d[11])")
-                    }
-                case .failed, .cancelled: finish(nil)
-                default: break
-                }
-            }
-            c.start(queue: .global(qos: .utility))
-            Task { try? await Task.sleep(for: timeout); finish(nil) }
-        }
     }
 }

@@ -2,38 +2,18 @@ import AppKit
 import ClamshellHome
 import SwiftUI
 
-/// Home address… (menu): the router's admin password, so the Mac can read the home's public address
-/// itself, and a DuckDNS name, so phones keep finding the Mac after the address changes (ADR-0005).
-/// Secrets go to the Keychain; nothing here is sent anywhere but the router and the DNS service.
+/// Home address… (menu): a DuckDNS name, so phones keep finding the Mac after the home's address changes,
+/// and the router's port forwards over UPnP (ADR-0005). The public address itself comes from the router over
+/// UPnP. The token goes to the Keychain; nothing here is sent anywhere but the router and the DNS service.
 struct HomeAddressView: View {
     let monitor: PublicAddressMonitor
     let forwarder: PortForwarder
-    @State private var password = ""
     @State private var name = ""
     @State private var token = ""
     @State private var loaded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("The Mac signs in to the router's web page once a minute to read its public address, then signs out. It waits while someone else is signed in there.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        SecureField(monitor.hasRouterPassword ? "saved (type to replace)" : "router admin password", text: $password)
-                            .textFieldStyle(.roundedBorder)
-                        Button("Save") { monitor.saveRouterPassword(password); password = "" }
-                            .disabled(password.isEmpty)
-                        if monitor.hasRouterPassword {
-                            Button("Forget") { monitor.saveRouterPassword("") }
-                        }
-                    }
-                    if !monitor.routerStatus.isEmpty {
-                        Text(monitor.routerStatus).font(.caption).textSelection(.enabled)
-                    }
-                }.padding(4)
-            } label: { Text("Router (TP-Link Archer VR400)").font(.headline) }
-
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("A free name from duckdns.org that always points at the home's address. Sign in there, add a domain (e.g. myhome), then paste the name and the account's token here. DuckDNS only learns the address. (A domain of your own hosted at deSEC works too.)")
@@ -72,7 +52,13 @@ struct HomeAddressView: View {
                 }.padding(4)
             } label: { Text("Port forwarding").font(.headline) }
 
-            Text("Phones are given: \(monitor.effective ?? "nothing yet")").font(.callout).textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 4) {
+                if !monitor.routerStatus.isEmpty {
+                    Text(monitor.routerStatus).font(.caption)
+                        .foregroundStyle(monitor.problem.isEmpty ? Color.primary : Color.orange).textSelection(.enabled)
+                }
+                Text("Phones are given: \(monitor.effective ?? "nothing yet")").font(.callout).textSelection(.enabled)
+            }
         }
         .padding(20)
         .frame(width: 460)

@@ -202,6 +202,11 @@ public final class UDPClient: PacketPath {
 
     public let name: String
 
+    /// The address the socket sends to, once known (the resolved name), for logs.
+    public var remote: String? {
+        state.withLock { s in (s.resolved ?? s.connection.currentPath?.remoteEndpoint).map { "\($0)" } }
+    }
+
     /// How often the socket moved to a new network path.
     public var migrations: Int { state.withLock { $0.migrations } }
 

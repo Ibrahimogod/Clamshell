@@ -82,11 +82,7 @@ final class PortForwarder {
         if me != local, let old = local { print("port forwarding: this Mac moved from \(old) to \(me) on the home network") }
         local = me
 
-        if gateway == nil || gatewayHost != gw {
-            gateway = await UPnPGateway.discover(gateway: gw)
-            gatewayHost = gw
-        }
-        guard let gateway else {
+        guard let gateway = await gateway(at: gw) else {
             report(problem: "The router doesn't answer UPnP. Turn UPnP on in its settings (NAT Forwarding › UPnP), or forward the ports by hand.")
             nextRenewal = Date().addingTimeInterval(600)
             return
@@ -149,13 +145,10 @@ final class PortForwarder {
         local = nil
         nextRenewal = .distantPast
         if !mine.isEmpty, let gw = await PublicAddressMonitor.gateway() {
-            if gateway == nil || gatewayHost != gw {
-                gateway = await UPnPGateway.discover(gateway: gw)
-                gatewayHost = gw
-            }
+            let g = await gateway(at: gw)
             for (proto, m) in mine {
                 // Only if it's still ours: another Mac may have taken the port over since.
-                if let g = gateway, let now = try? await g.mapping(m.port, proto), now.internalClient == m.client {
+                if let g, let now = try? await g.mapping(m.port, proto), now.internalClient == m.client {
                     try? await g.delete(m.port, proto)
                 }
             }
@@ -163,6 +156,29 @@ final class PortForwarder {
         }
         status = text
         problem = ""
+    }
+
+    /// The router's public (WAN) address, asked over UPnP whether or not the ports are opened here; nil when
+    /// the router doesn't answer.
+    func publicAddress() async -> String? {
+        guard let gw = await PublicAddressMonitor.gateway(), let g = await gateway(at: gw) else { return nil }
+        do {
+            return try await g.externalAddress()
+        } catch let e as UPnPError where e.code < 0 {
+            gateway = nil   // the router's UPnP server went away (restart): look it up again next time
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    /// The router's UPnP service, looked up again when the default gateway changes or it stopped answering.
+    private func gateway(at host: String) async -> UPnPGateway? {
+        if gateway == nil || gatewayHost != host {
+            gateway = await UPnPGateway.discover(gateway: host)
+            gatewayHost = host
+        }
+        return gateway
     }
 
     private func report(problem text: String) {

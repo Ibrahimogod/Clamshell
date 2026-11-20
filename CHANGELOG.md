@@ -4,15 +4,24 @@ All notable changes per milestone. Dates are 2026.
 
 ## Unreleased: The Mac notices a new home address, and phones follow it
 
-- **The Mac reads the home's public address from the router.** Save the TP-Link Archer VR400's admin
-  password in the new **Home address…** window (host menu). Once a minute the Mac signs in to the router
-  page the way the browser does, reads the internet connection's address and signs out. It waits while
-  someone is signed in there, and after one refused password it stops until a new one is saved, so the
-  router page never locks. The VR400 sometimes answers a request with HTTP 500; the window keeps the last
-  good reading and only shows an error after three failed reads in a row. Without a password it still asks
-  over NAT-PMP every 10 minutes.
+- **The Mac reads the home's public address from the router over UPnP**, once a minute, the same way it
+  opens the ports: no router password, no signing in to the router page. (An earlier build of this release
+  signed in to the TP-Link VR400's web page with the admin password; that's gone, and the saved password is
+  deleted from the Keychain at the next launch.)
+- **Fix: the phone couldn't connect away from home when the network was slow.** It sends a new handshake
+  every 500 ms while connecting and only accepted an answer to the newest one, so when an answer took longer
+  than half a second (mobile data, a router that just restarted) every answer was thrown away and the
+  connection timed out. It now accepts an answer to any of its recent handshakes. New test with a 1.2 s path.
+- **UDP 443 instead of 51820.** 51820 is WireGuard's port and the owner's mobile network dropped the Mac's
+  answers on it; 443 (HTTP/3's) gets through. SETUP §6 now fixes the Mac's port at 443, and the phone
+  defaults to 443 and also tries it when its saved port is another, so a Mac moved to 443 isn't lost.
+- **Fix: the TCP 443 path (TLS + WebSocket) never worked on the phone.** App Transport Security refused the
+  Mac's self-signed certificate even though the app accepts it (`-1200`), so a network that blocks UDP had
+  no way through. duckdns.org and dedyn.io names are now exempt from ATS (nothing else is); a typed IP
+  address or another domain still gets UDP only. The phone logs why that path fails.
+- `--network-check` at launch runs **Check connection** on a paired phone (for checks over `devicectl`).
 - **The Mac opens its own port forwards (UPnP).** No more Virtual Servers by hand: the Mac asks the router
-  for UDP 51820 and TCP 443 with a one-hour lease, renews every 30 minutes, and moves them at once when its
+  for UDP 443 and TCP 443 with a one-hour lease, renews every 30 minutes, and moves them at once when its
   own address on the home network changes (a new private Wi-Fi address, say). Paused remote access closes
   them. Needs UPnP on in the router; switch it off in **Home address…** to keep forwarding by hand. This
   reverses "keep UPnP off" (ADR-0005, amendment 2): any device at home can then open ports.
@@ -22,15 +31,14 @@ All notable changes per milestone. Dates are 2026.
   address. After a change the phone finds the Mac again on mobile data with nothing to type. Phones get the
   name at their next session. A typed address gives way to the name (the phone used to keep a typed
   number forever, so it kept dialing the old address); a typed name stays. The port can be left out of a typed
-  address (`myhome.duckdns.org` dials UDP 51820, or the Mac's own port). A domain of your own hosted at deSEC works too
+  address (`myhome.duckdns.org` dials UDP 443, or the Mac's own port). A domain of your own hosted at deSEC works too
   (deSEC's free dedyn.io names are closed to new accounts).
-- Secrets in the Keychain (`router-password`, `dns-token`), never in files or logs.
-- New shared library `ClamshellHome`: the router's encryption (AES-128-CBC, MD5, unpadded 512-bit RSA
-  signatures, all checked against openssl and Python), its message formats, the WAN reader and the DuckDNS/deSEC
-  client, the UPnP port-mapping client (SSDP search, IGD description, SOAP), with 18 tests.
+- The DuckDNS token is in the Keychain (`dns-token`), never in files or logs.
+- New shared library `ClamshellHome`: the UPnP client (SSDP search, IGD description, SOAP: port mappings and
+  the public address) and the DuckDNS/deSEC client, with 8 tests.
 - Telling home sessions from away ones compares against the address even when phones dial the name.
-- Docs: ADR-0005 accepted and amended twice (router readout, DuckDNS flagged as a third party you chose,
-  UPnP port forwards by your decision), SETUP §6,
+- Docs: ADR-0005 accepted and amended three times (DuckDNS flagged as a third party you chose, UPnP port
+  forwards by your decision, the address read over UPnP instead of the router page), SETUP §6,
   USAGE, security.md §7.
 
 ## 1.2.0: Privacy screen, unlock from the phone, big files and folders (2026-11-20)

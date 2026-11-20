@@ -50,8 +50,8 @@ let package = Package(
         // Files of any size and whole folders (protocol 1.9): listing and hashing, the send queue, and the
         // resumable receiver that writes segments at their offsets and checks the hash before saving.
         .target(name: "ClamshellFiles", dependencies: ["ClamshellWire"]),
-        // The home address (ADR-0005): reading the WAN IP from the TP-Link router's web UI, pointing a
-        // DuckDNS (or deSEC) name at it, and opening the ports on the router over UPnP.
+        // The home address (ADR-0005): the router's UPnP service (public address and port forwards) and a
+        // DuckDNS (or deSEC) name pointed at that address.
         .target(name: "ClamshellHome"),
 
         .testTarget(name: "ClamshellWireTests", dependencies: ["ClamshellWire"], resources: [.copy("Fixtures")]),

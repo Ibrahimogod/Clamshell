@@ -248,6 +248,10 @@ final class ClientController {
         if let i = CommandLine.arguments.firstIndex(of: "--posture"), i + 1 < CommandLine.arguments.count {
             posture.pinned = Posture(rawValue: CommandLine.arguments[i + 1])
         }
+        // `--network-check` on a paired phone: Check connection once Bonjour has had a moment to look.
+        if CommandLine.arguments.contains("--network-check"), pairedMac != nil {
+            Task { try? await Task.sleep(for: .seconds(3)); runNetworkCheck() }
+        }
     }
 
     // MARK: pairing (ADR-0014)
@@ -529,7 +533,7 @@ final class ClientController {
 
     /// Splits `host:port`, `[v6]:port`, or a bare host or `[v6]`, which gets `defaultPort` (the Mac's UDP
     /// port). Nil if malformed.
-    static func parse(_ text: String, defaultPort: UInt16 = 51820) -> (host: String, port: UInt16)? {
+    static func parse(_ text: String, defaultPort: UInt16 = ClientController.defaultUDPPort) -> (host: String, port: UInt16)? {
         let t = text.trimmingCharacters(in: .whitespaces)
         let host: Substring, port: Substring?
         if t.hasPrefix("["), let close = t.firstIndex(of: "]") {
@@ -552,7 +556,10 @@ final class ClientController {
     }
 
     /// The UDP port for an away address typed without one: the selected Mac's.
-    var awayUDPPort: UInt16 { pairedMac.map(\.udpPort).flatMap { $0 > 0 ? $0 : nil } ?? 51820 }
+    var awayUDPPort: UInt16 { pairedMac.map(\.udpPort).flatMap { $0 > 0 ? $0 : nil } ?? Self.defaultUDPPort }
+    /// The Mac's UDP port unless it was changed (docs/SETUP.md §6): 443, like HTTP/3, which mobile networks pass.
+    /// The race also tries it when the saved port is another one, so a Mac moved to it isn't lost.
+    nonisolated static let defaultUDPPort: UInt16 = 443
 
     func connectManual() {
         guard let (h, p) = Self.parse(manualAddress, defaultPort: awayUDPPort) else { return }
@@ -687,6 +694,9 @@ final class ClientController {
             if let (h, p) = Self.parse(manualAddress, defaultPort: awayUDPPort) {
                 let start: Duration = lan == nil ? .zero : .milliseconds(150)
                 candidates.append(.init(rank: 1, delay: start) { UDPClient(host: h, port: p, name: "udp") })
+                if p != Self.defaultUDPPort {
+                    candidates.append(.init(rank: 1, delay: start) { UDPClient(host: h, port: Self.defaultUDPPort, name: "udp") })
+                }
                 if let tp = UInt16(exactly: tcpPort), tp > 0 {
                     candidates.append(.init(rank: 2, delay: start + .milliseconds(150)) { WSSClient(host: h, port: tp, name: "tcp") })
                 }
@@ -809,6 +819,10 @@ final class ClientController {
             phase = .failed("This phone's key could not be read from the Keychain (\(error)). The app is probably not signed with a team; see docs/SETUP.md.")
             connection = nil
         } catch {
+            if let conn = connection, let race = udp {
+                let sent = await conn.handshakesSent, unmatched = await conn.unmatchedAnswers
+                print("# connect failed: \(error) · \(sent) handshakes sent, \(unmatched) answers didn't match · \(race.report)")
+            }
             phase = .failed("Could not connect: \(error). Check the pairing code, and that the phone can reach the Mac: the same network, or the Mac's address and forwarded UDP port (docs/SETUP.md › Away from home).")
             connection = nil
         }
