@@ -44,7 +44,10 @@ trip. Its buttons, left to right:
 - **Gauge:** the stats HUD: frames per second, Mbit/s, encode and decode time, drops, latency.
 - **Clipboard:** sends the phone's clipboard to the Mac. (iOS asks before an app reads the clipboard, so
   this direction is never automatic.)
-- **Share:** sends a file to the Mac's Downloads, up to 32 MB, when the Mac accepts files.
+- **Share:** sends files and folders to the Mac's Downloads when the Mac accepts files. With a 1.2 host there
+  is no size limit and you can pick several at once; with an older host, one file up to 32 MB. While files
+  move, the bar shows a progress bar and an ✕ that cancels them.
+- **Eye** (with a 1.2 host): privacy on the Mac ([Privacy screen](#privacy-screen)).
 - **Shared file** (once a file has come from the Mac): opens the share sheet for it.
 - **Window** (a window outline): stream one Mac window instead of the whole screen ([One window](#one-window)).
 - **Microphone:** the phone's mic on the Mac ([Microphone](#the-phones-microphone-on-the-mac)). Shown when the
@@ -108,12 +111,19 @@ are saved on the phone.
   on the Mac is on the phone. Items a password manager marks as concealed never leave the Mac.
 - **Phone → Mac clipboard:** the clipboard button in the bar.
 - **Files:** turn on **Accept files from the phone (to Downloads)** in the host menu, then use the share
-  button in the bar. If macOS asks whether ClamshellHost may use the Downloads folder, click Allow.
-- **Files to the phone:** in the host menu choose **Send a File to the iPhone…**, or in Finder select files and
-  choose **Finder › Services › Send to iPhone with Clamshell** (or right-click › Services). They're saved in
-  the Files app under **On My iPhone › Clamshell › From Mac**, up to 32 MB each (zip folders first). The bar
-  shows a share button for the newest one, and **This phone › Files from the Mac** lists them all, to share or
-  delete. If the Services item doesn't show up, log out and back in once after installing the host.
+  button in the bar. Pick files or whole folders, several at once. If macOS asks whether ClamshellHost may use
+  the Downloads folder, click Allow.
+- **Files to the phone:** in the host menu choose **Send Files to the iPhone…** (files or folders), or in
+  Finder select files and choose **Finder › Services › Send to iPhone with Clamshell** (or right-click ›
+  Services). They're saved in the Files app under **On My iPhone › Clamshell › From Mac**. The bar shows a
+  share button for the newest one, and **This phone › Files from the Mac** lists them all, to share or delete.
+  If the Services item doesn't show up, log out and back in once after installing the host.
+- **Big files and folders** (1.2 on both sides): any size. A folder keeps its structure; if a folder with that
+  name is already there, the copy goes to "Name 2". Each file is checked (SHA-256) before it's kept. If the
+  connection drops or either app quits, sending the same files again **carries on where it stopped**: the
+  part already received is kept for 7 days in a hidden `.clamshell-partial` folder. Files go one at a time;
+  the host menu and the phone's bar show progress, with **Cancel**. The phone and Mac need room for the file
+  plus 256 MB, or the file is refused with "not enough space".
 - **Sound:** **Play this Mac's sound on the phone** in the host menu (on by default). Mute it on the phone
   with **Layout › Sound**, or for good under **This phone › Play the Mac's sound**.
 
@@ -191,7 +201,10 @@ Click the laptop symbol in the menu bar.
 | Sync clipboard with the phone | Mac copies go to the phone |
 | Play this Mac's sound on the phone | System audio streams to the phone |
 | Accept files from the phone (to Downloads) | Lets the phone's share button drop files in ~/Downloads |
-| Send a File to the iPhone… | Sends files to the connected phone's Files app (shown while a 1.1 phone is connected) |
+| Send Files to the iPhone… | Sends files (and with a 1.2 phone, folders) to the connected phone's Files app (shown while a 1.1 or later phone is connected) |
+| Hide this Mac's screen during a session | **Only when away from home** (default), **Always** or **Never**: covers this Mac's displays while a phone uses it ([Privacy screen](#privacy-screen)) |
+| While hidden, also turn off this Mac's keyboard and trackpad | Off by default. Local keys and clicks do nothing while the screen is hidden, except Esc ×3 |
+| Cancel Transfers | Shown while files move, under a progress bar |
 | Keep this Mac awake while plugged in | Stops idle sleep on the power adapter only, so the phone can always reach it. The display still sleeps; a connecting phone wakes it |
 | Open at login | Starts the host when you log in (System Settings › General › Login Items) |
 | Latency barcode / Flash square | Measurement tools, see [DEVELOPMENT.md](DEVELOPMENT.md#bench-harnesses) |
@@ -204,11 +217,34 @@ Click the laptop symbol in the menu bar.
 The menu also shows each connected phone, the path it's using ("· internet" away from home) and the public
 address phones use away from home.
 
+## Privacy screen
+
+With a 1.2 host, while a phone uses the Mac **from away** (the menu's default), every display of the Mac goes
+black and says "In use remotely — Clamshell", which phone, and since when. The phone still sees the real
+screen: the black panels are left out of what is streamed. A separate Clamshell display isn't covered.
+
+- **Phone › Eye button:** turn **Hide the Mac's screen** on or off for this session, and **Turn off the Mac's
+  keyboard and trackpad**. This lasts until another phone connects.
+- **At the Mac:** pressing **Esc three times** ends the session and removes the cover at once, even with the
+  keyboard turned off. The power button always works. If Clamshell quits or crashes, the cover goes with it.
+- **When the phone drops**, the cover stays 20 s ("Waiting for … to reconnect"), so a quick reconnect doesn't
+  show your screen. Any key or click at the Mac removes it sooner.
+- If the Mac can't leave the cover out of the stream, it doesn't put it up (the phone would see black).
+
+## Unlocking the Mac from the phone
+
+When the Mac is locked, the phone's banner says so with an **Unlock…** button. Type the Mac's password there
+and tap **Type on the Mac**: the phone presses those keys on the Mac's login screen, then Return. Nothing is
+saved or logged. It uses the Mac's keyboard layout; a character that layout can't type is named, so you can
+type at the Mac instead. Check that Caps Lock is off. Touch ID can't be used from the phone.
+
 ## Safety at the Mac
 
 - Using the Mac's own keyboard or trackpad **pauses the phone's input** until the Mac has been left alone for
-  3 s; the phone shows "Someone is using the Mac".
-- Press **Esc three times quickly** on the Mac to end every session.
+  3 s; the phone shows "Someone is using the Mac". A key, click or scroll counts at once; moving the pointer
+  counts once it travels about 40 points within a second, so brushing the trackpad doesn't.
+- Press **Esc three times quickly** on the Mac to end every session (this also works while the privacy screen
+  has the keyboard turned off).
 - Each time a phone connects, the Mac shows a notification (if you allowed them).
 - Only paired phones can connect, pairing only works from your own network, and **Revoke** cuts a phone off
   immediately. See [security.md](security.md) for the full design.

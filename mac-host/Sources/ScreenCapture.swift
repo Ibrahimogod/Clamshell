@@ -18,13 +18,16 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     private var lastReport = ContinuousClock.now
     private var stream: SCStream?
     private(set) var lastError: String?
+    /// The whole-display capture's display (nil for one window), for `exclude`.
+    private var display: SCDisplay?
 
     init(handler: @escaping Handler) { self.handler = handler }
 
     /// Waits (up to `timeout`) for SCK to list the display, then starts capturing.
     /// With `windowID` (1.8), only that window, wherever it is (`desktopIndependentWindow`).
+    /// `excluding`: windows left out of a whole-display capture (the privacy screen's panels, 1.9).
     func start(displayID: CGDirectDisplayID, windowID: CGWindowID? = nil, width: Int, height: Int, fps: Int, showsCursor: Bool = true,
-               pixelFormat: OSType, timeout: Duration = .seconds(3)) async throws {
+               pixelFormat: OSType, excluding: [CGWindowID] = [], timeout: Duration = .seconds(3)) async throws {
         let deadline = ContinuousClock.now + timeout
         var filter: SCContentFilter?
         while filter == nil {
@@ -33,7 +36,8 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
                 guard let w = content.windows.first(where: { $0.windowID == windowID }) else { throw CaptureError.windowNotListed }
                 filter = SCContentFilter(desktopIndependentWindow: w)
             } else if let display = content.displays.first(where: { $0.displayID == displayID }) {
-                filter = SCContentFilter(display: display, excludingWindows: [])
+                self.display = display
+                filter = SCContentFilter(display: display, excludingWindows: content.windows.filter { excluding.contains($0.windowID) })
             } else {
                 guard ContinuousClock.now < deadline else { throw CaptureError.displayNotListed }
                 try await Task.sleep(for: .milliseconds(100))
@@ -53,6 +57,23 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         try await s.startCapture()
         stream = s
+    }
+
+    /// Leaves these windows out from now on (they must be on screen). Waits briefly for windows the
+    /// system doesn't list yet. Returns false if some never showed up.
+    @discardableResult
+    func exclude(_ ids: [CGWindowID]) async -> Bool {
+        guard let stream, let display else { return true }
+        for attempt in 0..<10 {
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return false }
+            let found = content.windows.filter { ids.contains($0.windowID) }
+            if found.count == Set(ids).count || attempt == 9 {
+                do { try await stream.updateContentFilter(SCContentFilter(display: display, excludingWindows: found)) } catch { return false }
+                return found.count == Set(ids).count
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
     }
 
     func stop() async {

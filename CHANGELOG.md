@@ -2,10 +2,57 @@
 
 All notable changes per milestone. Dates are 2026.
 
-## Unreleased
+## 1.2.0: Privacy screen, unlock from the phone, big files and folders (2026-11-20)
 
+Protocol 1.9, additive: 1.0–1.1 phones and Macs still work together, without the new features. The ideas for
+these three come from looking at RustDesk (privacy mode, block user input, resumable file transfer); none of
+its code is used.
+
+- **Privacy screen on the Mac.** While a phone uses the Mac from away (the default; also **Always** or
+  **Never** in the host menu), every physical display shows a black "In use remotely — Clamshell" screen with
+  the phone's name and start time. The phone still sees the real screen: the panels are left out of the
+  capture, and they only go up once that worked. When the phone drops, the cover stays 20 s for a reconnect;
+  a local key or click lifts it sooner. If the host quits, it goes with it.
+- **Turn off the Mac's keyboard and trackpad** while the screen is hidden (off by default, host menu or the
+  phone's new eye button). Esc pressed three times at the Mac still ends the session, and the power key is
+  never blocked.
+- **Unlock the Mac from the phone.** When the Mac is locked, the banner has an **Unlock…** button: type the
+  password on the phone and it is typed on the Mac's login screen with the Mac's keyboard layout, then
+  Return. Nothing is stored or logged.
+- **Files and folders of any size, both ways.** Pick several files or whole folders on the phone or in the
+  host's **Send Files to the iPhone…**. Each file is checked with SHA-256 and a folder keeps its structure
+  ("Album 2" if "Album" is already there). A dropped connection or an app restart resumes where it stopped,
+  from a partial copy kept for 7 days. Progress and **Cancel** in the host menu and in the phone's bar.
+  Older peers still get the 32 MB single-file transfer.
+- New shared library `ClamshellFiles` (send queue, receiver, listing), with tests for folders, reordered and
+  dropped segments, resume after a restart, damaged files, refusals and cancel. `PasswordTyping` in
+  `ClamshellInput`. Golden fixtures for the eight new or changed messages.
+- Docs: protocol.md 1.9, ADR-0015 marked accepted with what was built, security.md T9 implemented,
+  USAGE.md "Privacy screen" and "Unlocking the Mac from the phone".
+- Not in this release: choosing which of several Mac displays to stream, and an IPv6 direct path.
+- **Brushing the Mac's trackpad no longer pauses the phone.** The Mac pauses the phone's input while someone
+  uses the Mac itself; a pointer move now counts only once it travels about 40 points within a second. Keys,
+  clicks and scrolls at the Mac still pause it at once, and Esc ×3 still ends the session. Before, a hand
+  resting near the trackpad while holding the phone froze the phone's pointer for 3 s at a time.
+- **The pointer keeps up on mobile data.** Mobile networks deliver the phone's moves in clumps, and the Mac
+  started each move from where macOS said the cursor was, which hadn't caught up with the moves just
+  before it. Most of a clump's distance was lost and the phone's pointer snapped back by up to a third of
+  the screen. While the phone is moving the pointer, the Mac now builds on the position it last set.
+- When the phone's moves arrive in bursts, macOS can merge them into
+  one event that has lost Clamshell's tag, and the Mac took that for someone at its trackpad: it paused the
+  phone's input and the pointer snapped back afterwards. A move that ends where Clamshell just put the
+  pointer now counts as the phone's. The Mac also reports the position it just set instead of reading the
+  cursor back before the window server has caught up, and the phone's console logs how often and how far
+  the pointer had to be corrected (`# pointer: N corrections`).
+- The phone app writes its console line by line, so `xcrun devicectl device process launch --console` shows
+  its notes (pointer, keyboard, Mac state) live instead of only when the app quits.
+- It also keeps a copy in `Library/Application Support/console.log` (the run before: `console.1.log`), so a
+  test on mobile data, out of reach of `--console`, can be copied off afterwards with
+  `xcrun devicectl device copy from`.
 - `tools/scripts/release.sh` installs on a phone named with `CLAMSHELL_DEVICE` even when devicectl lists it
   as disconnected. devicectl shows no capabilities for such a phone, so the old check skipped it.
+- It also skips simulators: Xcode 27's devicectl lists them with the real phones, so a simulated iPhone Duo
+  was picked over the connected phone and the install failed.
 - The script now prints the earliest expiry of the app's and the widget's provisioning profiles, since the
   earlier one decides when the app stops opening.
 

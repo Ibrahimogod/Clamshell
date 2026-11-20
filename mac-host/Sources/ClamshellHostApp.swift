@@ -60,10 +60,35 @@ struct HostMenu: View {
             Toggle("Play this Mac's sound on the phone", isOn: Binding(get: { host.streamSound }, set: { host.streamSound = $0 }))
             Toggle("Accept files from the phone (to Downloads)", isOn: Binding(get: { host.acceptFiles }, set: { host.acceptFiles = $0 }))
             if host.canSendFiles {
-                Button("Send a File to the iPhone…") { host.chooseFilesForPhone() }
-                    .help("Or in Finder: right-click files › Services › Send to iPhone with Clamshell.")
+                Button("Send Files to the iPhone…") { host.chooseFilesForPhone() }
+                    .help("Files or whole folders, any size. Or in Finder: right-click › Services › Send to iPhone with Clamshell.")
+            }
+            if let f = host.transferFraction {
+                VStack(alignment: .leading, spacing: 3) {
+                    ProgressView(value: f).progressViewStyle(.linear)
+                    HStack(alignment: .top) {
+                        Text(host.transferText).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Cancel Transfers") { host.cancelTransfers() }.font(.caption)
+                            .help("Stops now. What arrived so far is kept: sending the same file again picks up where it stopped.")
+                    }
+                }
             }
             if !host.lastFileNote.isEmpty { Text(host.lastFileNote).font(.caption).foregroundStyle(.secondary) }
+            Divider()
+            Picker("Hide this Mac's screen during a session", selection: Binding(get: { host.curtainMode }, set: { host.curtainMode = $0 })) {
+                ForEach(HostController.CurtainMode.allCases) { Text($0.label).tag($0) }
+            }
+            .font(.callout)
+            .help("Anyone at the Mac sees a black screen saying it's in use remotely; the phone still sees everything. The phone can change this for one session.")
+            Toggle("While hidden, also turn off this Mac's keyboard and trackpad", isOn: Binding(get: { host.blockLocalInput }, set: { host.blockLocalInput = $0 }))
+                .font(.callout)
+                .disabled(host.curtainMode == .off)
+                .help("Esc pressed three times at the Mac always ends the session and turns them back on.")
+            if host.curtainShown {
+                Label(host.localInputBlocked ? "Screen hidden · keyboard and trackpad off" : "Screen hidden", systemImage: "lock.display")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Keep this Mac awake while plugged in", isOn: Binding(get: { host.keepAwakeOnAC }, set: { host.keepAwakeOnAC = $0 }))
             Toggle("Open at login", isOn: Binding(get: { _ = host.loginItemTick; return host.openAtLogin }, set: { host.openAtLogin = $0 }))
                 .font(.callout)

@@ -139,10 +139,22 @@ final class CursorModel {
         }
         let ex = mac.x - predicted.x, ey = mac.y - predicted.y
         guard hypot(ex, ey) > 2 else { return }
+        noteSnap(hypot(ex, ey))
         let target = clamp(CGPoint(x: position.x + ex, y: position.y + ey))
         for i in history.indices { history[i].at.x += ex; history[i].at.y += ey }
         correction = (position, target, CACurrentMediaTime())
         position = target
+    }
+
+    private var snaps = (count: 0, biggest: 0.0, since: CACurrentMediaTime())
+    /// The phone's console: how often the Mac disagreed with the prediction (the pointer jumps), per 5 s.
+    private func noteSnap(_ e: Double) {
+        snaps.count += 1
+        snaps.biggest = max(snaps.biggest, e)
+        let now = CACurrentMediaTime()
+        guard now - snaps.since >= 5 else { return }
+        print(String(format: "# pointer: %d corrections in %.0f s, biggest %.0f pt", snaps.count, now - snaps.since, snaps.biggest))
+        snaps = (0, 0, now)
     }
 
     /// Where to draw this frame (applies the easing).

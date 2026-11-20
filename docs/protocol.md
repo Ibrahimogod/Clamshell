@@ -227,3 +227,51 @@ still 32 MiB.
 cancellation) on. Only while the phone's mic button is on, and only to a Mac that advertised `micOpus`. The
 Mac plays them into the Clamshell Microphone driver (a loopback Core Audio device), under the same rules as
 1.5: newer seq only, at most 120 ms queued.
+
+## Protocol 1.9 (files and folders of any size, privacy screen, unlock)
+
+| Type | Message | Ch. | Direction | Body |
+|---|---|---|---|---|
+| `0x0029` | PrivacyRequest | ctl | phone → Mac | 1 curtain (bool, optional) · 2 blockLocalInput (bool, optional); an absent field leaves that setting as it is |
+| `0x0303` | FileBegin | ctl | either way | 1 transferId (non-zero) · 2 batchId · 3 path ("/" separated, ≤ 32 parts, ≤ 1024 bytes) · 4 size · 5 sha256 (32 bytes) · 6 modified (Unix s, optional) · 7 index · 8 count |
+| `0x0304` | FileAccept | ctl | receiver → sender | 1 transferId · 2 status (0 accepted, 1 refused, 2 noSpace, 3 badName, 4 alreadySaved; absent = 0) · 3 offset (absent = 0) |
+| `0x0305` | FileSegment | files, via bulk | sender → receiver | 1 transferId · 2 offset · 3 data (1 … 65 536 bytes) |
+| `0x0306` | FileProgress | ctl | receiver → sender | 1 transferId · 2 confirmed (bytes written in order) · 3 state (0 receiving, 1 checking, 2 saved, 3 damaged, 4 writeFailed; absent = 0) · 4 savedName (optional) |
+| `0x0307` | FileCancel | ctl | either way | 1 transferId (0 = the whole batch) · 2 batchId (optional) |
+
+| HostState tag | Field | Type | Meaning |
+|---|---|---|---|
+| 10 | curtain | bool, optional | The privacy screen covers the Mac's own displays |
+| 11 | localInputBlocked | bool, optional | The Mac's own keyboard and trackpad are turned off |
+
+New capability bits: 18 `filesV2` · 19 `curtain`. A side sends FileBegin only to a peer with `filesV2` (and
+falls back to the 1.5 FileOffer, ≤ 32 MiB, otherwise), and the phone sends PrivacyRequest only to a Mac with
+`curtain`.
+
+**Files.** One file at a time. The sender announces it with FileBegin; the receiver answers FileAccept with
+the offset to start from, which is the size of a partial copy it kept from an earlier try (same sha256 and
+size), or 0. Segments of 64 KiB follow from that offset, each one bulk transfer, at most 8 in flight past the
+receiver's last `confirmed`. The receiver writes them in order (out-of-order segments wait in memory, within
+the window) and sends a FileProgress for each. With every byte in, it hashes the file off the main thread
+(`checking`), then reports `saved` with the name it used, or `damaged`. A damaged file is sent once more from
+0, then fails.
+
+- **Resuming:** the partial copy lives in `<folder>/.clamshell-partial/<sha256>-<size>.part`, with its
+  confirmed length saved every 4 MiB or 1 s. A sender repeats FileBegin after 5 s without an answer or 10 s
+  without progress, and on reconnecting to the same peer; the receiver answers a repeat with where it is now
+  (or `alreadySaved`). After 6 repeats without an answer the file fails. Partials older than 7 days are
+  deleted.
+- **Names:** the receiver turns `path` into safe components (`FileBegin.safeComponents`: no "..", ".", empty,
+  hidden or separator-bearing parts) and never overwrites. The top folder of a batch is mapped once, so a
+  folder that already exists gets "Album 2" for the whole batch.
+- **Space:** a file is refused with `noSpace` unless the receiver has its size plus 256 MiB free.
+- The Mac accepts files only with **Accept files from the phone** on (otherwise `refused`), into ~/Downloads.
+  The phone always accepts, into `Documents/From Mac`.
+
+**Privacy screen.** The Mac covers its physical displays during a session according to its menu setting (off,
+away only, always). A PrivacyRequest overrides that for the session, and lasts until a different phone
+connects. `blockLocalInput` applies only while the curtain is up. Esc ×3 at the Mac ends the session either
+way. The phone shows the state from HostState tags 10–11.
+
+**Unlocking** needs no message: the phone's unlock sheet sends the password as ordinary `KeyEvent`s (key
+positions from the Mac's `KeyboardLayout`, ADR-0013), then Return.

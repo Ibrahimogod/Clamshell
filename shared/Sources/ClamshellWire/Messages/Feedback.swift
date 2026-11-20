@@ -119,9 +119,16 @@ public struct HostState: WireMessage {
     public var window: String?
     /// 1.8: the frame rate the Mac streams at now (after the phone's cap), 0 if not reported.
     public var fps: UInt16
+    /// 1.9: the Mac's own screen is hidden behind the curtain. nil from older Macs.
+    public var curtain: Bool?
+    /// 1.9: the Mac's own keyboard and trackpad are turned off for the session. nil from older Macs.
+    public var localInputBlocked: Bool?
 
     public init(screen: MacScreenState, keepsAwake: Bool, targetBitrateKbps: UInt32, fecPercent: UInt8 = 0, inputAllowed: Bool? = nil,
-                localUser: Bool = false, micReady: Bool? = nil, window: String? = nil, fps: UInt16 = 0) {
+                localUser: Bool = false, micReady: Bool? = nil, window: String? = nil, fps: UInt16 = 0,
+                curtain: Bool? = nil, localInputBlocked: Bool? = nil) {
+        self.curtain = curtain
+        self.localInputBlocked = localInputBlocked
         self.localUser = localUser
         self.micReady = micReady
         self.window = window
@@ -144,11 +151,15 @@ public struct HostState: WireMessage {
         if let micReady { t.bool(7, micReady) }
         if let window { t.string(8, window) }
         if fps > 0 { t.uint(9, UInt64(fps)) }
+        if let curtain { t.bool(10, curtain) }
+        if let localInputBlocked { t.bool(11, localInputBlocked) }
         return t.bytes
     }
 
     public init(body: [UInt8]) throws {
-        let t = try TLVReader(body, knownTags: [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        let t = try TLVReader(body, knownTags: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+        curtain = try t.optionalUInt(10).map { $0 != 0 }
+        localInputBlocked = try t.optionalUInt(11).map { $0 != 0 }
         micReady = try t.optionalUInt(7).map { $0 != 0 }
         window = try t.optionalString(8)
         fps = try (t.optionalUInt(9) ?? 0).narrowed(to: UInt16.self, field: "fps")

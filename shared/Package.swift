@@ -18,6 +18,7 @@ let package = Package(
         .library(name: "ClamshellStream", targets: ["ClamshellStream"]),
         .library(name: "ClamshellKeychain", targets: ["ClamshellKeychain"]),
         .library(name: "ClamshellInput", targets: ["ClamshellInput"]),
+        .library(name: "ClamshellFiles", targets: ["ClamshellFiles"]),
     ],
     targets: [
         // Versioned binary protocol: varints, TLVs, inner message header, message types (ADR-0011).
@@ -45,6 +46,9 @@ let package = Package(
         // Keyboard/trackpad model (ADR-0013): HID→kVK map, phone-side sender + trackpad interpreter, Mac-side
         // receiver (dedupe, modifier reconciliation, key repeat, momentum, watchdog). Pure Swift, no UI.
         .target(name: "ClamshellInput", dependencies: ["ClamshellWire"]),
+        // Files of any size and whole folders (protocol 1.9): listing and hashing, the send queue, and the
+        // resumable receiver that writes segments at their offsets and checks the hash before saving.
+        .target(name: "ClamshellFiles", dependencies: ["ClamshellWire"]),
 
         .testTarget(name: "ClamshellWireTests", dependencies: ["ClamshellWire"], resources: [.copy("Fixtures")]),
         .testTarget(name: "ClamshellSessionTests", dependencies: ["ClamshellSession", "ClamshellWire"], resources: [.copy("Vectors")]),
@@ -54,6 +58,7 @@ let package = Package(
         .testTarget(name: "ClamshellCodecTests", dependencies: ["ClamshellCodec"], resources: [.copy("Samples")]),
         .testTarget(name: "ClamshellVideoTests", dependencies: ["ClamshellVideo", "ClamshellCodec"]),
         .testTarget(name: "ClamshellInputTests", dependencies: ["ClamshellInput", "ClamshellWire"]),
+        .testTarget(name: "ClamshellFilesTests", dependencies: ["ClamshellFiles", "ClamshellWire"]),
         .testTarget(name: "ClamshellStreamTests", dependencies: ["ClamshellStream", "ClamshellVideo", "ClamshellWire", "ClamshellRateControl", "ClamshellSession"]),
     ]
 )

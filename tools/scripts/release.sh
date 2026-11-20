@@ -74,7 +74,9 @@ def caps(x): return {f["featureIdentifier"] for f in x.get("capabilities",[])}
 # A named phone is used even when it reports "disconnected": that only means no tunnel is open yet, and
 # the install opens one. devicectl lists no capabilities for such a phone, so only its pairing is checked.
 # Otherwise only phones with a live connection that can take an app.
-ok=[x for x in d if x.get("connectionProperties",{}).get("pairingState")=="paired"]
+# Simulators are listed too (Xcode 27); only real phones.
+ok=[x for x in d if x.get("connectionProperties",{}).get("pairingState")=="paired"
+    and x["hardwareProperties"].get("reality","physical")=="physical"]
 if want: ok=[x for x in ok if want in (x["hardwareProperties"].get("udid",""), x.get("deviceProperties",{}).get("name",""))]
 else: ok=[x for x in ok if x.get("connectionProperties",{}).get("tunnelState")=="connected" and "com.apple.coredevice.feature.installapp" in caps(x)]
 ok.sort(key=lambda x: x["hardwareProperties"].get("productType")!="iPhone19,4")   # an iPhone Duo first

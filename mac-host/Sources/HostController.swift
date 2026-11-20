@@ -1,4 +1,5 @@
 import AppKit
+import ClamshellFiles
 import ClamshellInput
 import ClamshellKeychain
 import ClamshellRateControl
@@ -121,8 +122,53 @@ final class HostController {
             print(active ? "local keyboard/mouse in use: phone input paused" : "local keyboard/mouse idle: phone input resumed")
             Task { await self.sendHostState() }
         },
-        onPanic: { [weak self] in Task { await self?.disconnectAll() } })
+        onPanic: { [weak self] in self?.panic() })
     private(set) var lastFileNote = ""
+
+    // MARK: 1.9: privacy screen, local input block, files of any size
+
+    enum CurtainMode: String, CaseIterable, Identifiable {
+        case off, away, always
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .off: "Never"
+            case .away: "When the phone is away from home"
+            case .always: "Always"
+            }
+        }
+    }
+    /// When to hide this Mac's own screen during a session (the phone can ask otherwise for one session).
+    var curtainMode = CurtainMode(rawValue: UserDefaults.standard.string(forKey: "curtainMode") ?? "") ?? .away {
+        didSet { UserDefaults.standard.set(curtainMode.rawValue, forKey: "curtainMode"); Task { await applyPrivacy() } }
+    }
+    /// While the screen is hidden, also turn this Mac's keyboard and trackpad off. Off by default.
+    var blockLocalInput = UserDefaults.standard.bool(forKey: "blockLocalInput") {
+        didSet { UserDefaults.standard.set(blockLocalInput, forKey: "blockLocalInput"); Task { await applyPrivacy() } }
+    }
+    /// The phone's choice for this session (`PrivacyRequest`), over the settings above.
+    private var sessionCurtain: Bool?
+    private var sessionBlock: Bool?
+    @ObservationIgnored private let curtain = Curtain()
+    @ObservationIgnored private let blocker = LocalInputBlocker()
+    private(set) var curtainShown = false
+    private(set) var localInputBlocked = false
+    /// Esc ×3 at the Mac: the screen comes back at once instead of waiting for a reconnect.
+    private var panicked = false
+
+    /// Files to the phone (1.9) and from it, any size, folders, resumable.
+    @ObservationIgnored private var fileQueue = FileSendQueue()
+    /// The phone `fileQueue` belongs to; another phone connecting drops it.
+    @ObservationIgnored private var filePeer: [UInt8]?
+    @ObservationIgnored private let fileReceiver = FileReceiver(root: HostController.downloadsFolder)
+    nonisolated static var downloadsFolder: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+    }
+    /// One line for the menu about what's being sent or received, and its progress (nil: nothing).
+    private(set) var transferText = ""
+    private(set) var transferFraction: Double?
+    var transferring: Bool { fileQueue.busy || fileReceiver.busy }
     /// Bumped when a phone reports its app's expiry, so the menu redraws.
     private(set) var expiryTick = 0
     /// Phone input messages thrown away because someone was using the Mac (for the host log).
@@ -172,7 +218,23 @@ final class HostController {
         self.service = service
         NSApplication.shared.servicesProvider = service
         NSUpdateDynamicServices()
+        setUpFileReceiver()
         Task { await run() }
+    }
+
+    private func setUpFileReceiver() {
+        let r = fileReceiver
+        r.accepting = { [weak self] in self?.acceptFiles ?? false }
+        r.send = { [weak self] m in
+            guard let self, let s = self.session, let server = self.server else { return }
+            let peer = s.peerKey
+            Task { await server.send([m], to: peer) }
+        }
+        r.onChange = { [weak self] in self?.updateTransferText() }
+        r.onSaved = { [weak self] url in
+            self?.lastFileNote = "Saved \(url.lastPathComponent) to Downloads"
+            print("file: saved \(url.path)")
+        }
     }
 
     /// Mac → phone (1.3): the away-from-home address, at session start and on every change.
@@ -314,7 +376,7 @@ final class HostController {
             deviceStore = DeviceStore(keychain: ephemeral ? nil : keychain)
             devices = deviceStore.devices
             let hello = Hello(appVersion: AppVersion.short, build: AppVersion.build, capabilities: [.refinementFrames, .benchBarcode, .receiverReports, .fecXor, .inputV1, .clientCursor, .clipboardV1, .filesV1, .audioOpus,
-                                                                                .filesToPhone, .micOpus, .windowStreaming, .frameRateCap],
+                                                                                .filesToPhone, .micOpus, .windowStreaming, .frameRateCap, .filesV2, .curtain],
                               displayModes: [], maxFps: 120, deviceName: Host.current().localizedName ?? "Mac")
             let server = HostSessionServer(responder: HostResponder(identity: identity, peers: devices.map(\.peer)), hello: hello)
             self.server = server
@@ -369,6 +431,15 @@ final class HostController {
             expiryTick += 1
             let phone = hello.deviceName.isEmpty ? "your iPhone" : hello.deviceName
             Task { await PhoneAppExpiry.scheduleReminder(key, phone: phone) }
+            panicked = false
+            if filePeer == key {
+                fileQueue.reconnected()          // resume what was being sent
+            } else {
+                fileQueue = FileSendQueue()
+                filePeer = key
+                sessionCurtain = nil
+                sessionBlock = nil
+            }
             await startStream(key: key, hello: hello, mode: initialMode(hello), continuing: nil, server: server)
         case .messages(let key, let messages):
             guard let session, session.peerKey == key else { return }
@@ -435,7 +506,8 @@ final class HostController {
                                                       adaptive: hello.capabilities.contains(.receiverReports),
                                                       fec: hello.capabilities.contains(.fecXor), clientCursor: clientCursor,
                                                       mirror: mirrorMainDisplay, remote: remote, continuing: continuing,
-                                                      window: sourceWindow, fpsCap: fpsCap, server: server)
+                                                      window: sourceWindow, fpsCap: fpsCap,
+                                                      excluding: curtain.shown ? curtain.windowIDs : [], server: server)
                 } catch where sourceWindow != nil {
                     // The window closed or can't be captured: back to the whole screen.
                     print("window stream failed (\(error)): streaming the whole screen")
@@ -444,7 +516,8 @@ final class HostController {
                                                       adaptive: hello.capabilities.contains(.receiverReports),
                                                       fec: hello.capabilities.contains(.fecXor), clientCursor: clientCursor,
                                                       mirror: mirrorMainDisplay, remote: remote, continuing: continuing,
-                                                      window: nil, fpsCap: fpsCap, server: server)
+                                                      window: nil, fpsCap: fpsCap,
+                                                      excluding: curtain.shown ? curtain.windowIDs : [], server: server)
                 }
                 self.session = session
                 if hello.capabilities.contains(.inputV1) { startInput(session, cursor: clientCursor, server: server) }
@@ -461,7 +534,7 @@ final class HostController {
                 startStats()
                 updateBarcode()
                 watchWindow(session)
-                await sendHostState()
+                await applyPrivacy()
                 await sendHomeEndpoint()
                 sendKeyboardLayout()
                 print("streaming to \(hello.deviceName): \(streamDescription) · \(await server.pathDescription(of: key) ?? "?")")
@@ -476,11 +549,13 @@ final class HostController {
     private func handleMessages(session: StreamSession, key: [UInt8], messages: [InnerMessage], server: HostSessionServer) async {
             let input = messages.filter { $0.channel == .input }
             if !input.isEmpty {
-                if localGuard.active { droppedInput += input.count } else { session.injector?.handle(input) }
+                // With the keyboard and trackpad off, local events never arrive: nothing to pause for.
+                if localGuard.active && !blocker.active { droppedInput += input.count } else { session.injector?.handle(input) }
             }
             let t2 = HostClock.nowNs()
             var replies: [InnerMessage] = []
             var rebuild = false
+            var filesChanged = false
             for m in messages {
                 switch m.type {
                 case .audioPacket:
@@ -522,11 +597,26 @@ final class HostController {
                     if let done { received(done) }
                 case .bulkAck:
                     if let a = try? BulkAck(m) { bulkOut.handle(a) }
+                case .privacyRequest:
+                    guard let r = try? PrivacyRequest(m) else { continue }
+                    if let c = r.curtain { sessionCurtain = c }
+                    if let b = r.blockLocalInput { sessionBlock = b }
+                    print("privacy: the phone asks for the screen \(r.curtain.map { $0 ? "hidden" : "shown" } ?? "unchanged"), local input \(r.blockLocalInput.map { $0 ? "off" : "on" } ?? "unchanged")")
+                    Task { await self.applyPrivacy() }
+                case .fileBegin:
+                    if let b = try? FileBegin(m) { fileReceiver.handle(b, nowNs: t2) }
+                case .fileAccept:
+                    if let a = try? FileAccept(m) { fileQueue.handle(a, nowNs: t2); filesChanged = true }
+                case .fileProgress:
+                    if let p = try? FileProgress(m) { fileQueue.handle(p, nowNs: t2); filesChanged = true }
+                case .fileCancel:
+                    if let c = try? FileCancel(m) { fileQueue.handle(c); fileReceiver.handle(c); filesChanged = true }
                 default:
                     break
                 }
             }
             if !replies.isEmpty { await server.send(replies, to: key) }
+            if filesChanged { pumpFiles() }
             if rebuild {
                 // A resized window takes a moment to settle before it's captured at its new size.
                 if sourceWindow != nil { try? await Task.sleep(for: .milliseconds(200)) }
@@ -611,6 +701,7 @@ final class HostController {
     @discardableResult
     func sendFilesToPhone(_ urls: [URL]) -> String {
         guard session != nil else { lastFileNote = "Connect the phone first."; return lastFileNote }
+        if peerCaps.contains(.filesV2) { queueFilesForPhone(urls); return "" }
         guard peerCaps.contains(.filesToPhone) else { lastFileNote = "The phone's app is too old to take files: update it."; return lastFileNote }
         var sent: [String] = []
         for url in urls {
@@ -637,8 +728,10 @@ final class HostController {
     func chooseFilesForPhone() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.message = "Choose files for the phone (up to \(FileOffer.maxBytes / 1_048_576) MB each). They go to Files › On My iPhone › Clamshell › From Mac."
+        let v2 = peerCaps.contains(.filesV2)
+        panel.canChooseDirectories = v2
+        panel.message = v2 ? "Choose files or folders for the phone. They go to Files › On My iPhone › Clamshell › From Mac."
+                           : "Choose files for the phone (up to \(FileOffer.maxBytes / 1_048_576) MB each). They go to Files › On My iPhone › Clamshell › From Mac."
         panel.prompt = "Send"
         NSApplication.shared.activate()
         guard panel.runModal() == .OK else { return }
@@ -663,6 +756,8 @@ final class HostController {
             pairingWindow.close()
         case .peerDisconnected(let key):
             if session?.peerKey == key {
+                endPrivacy(phoneMayReturn: !panicked)
+                fileReceiver.suspend()
                 await stopStreaming()
                 if case .streaming = status, let port = await server.boundPort { status = .waiting(port: port) }
             }
@@ -792,7 +887,8 @@ final class HostController {
                             targetBitrateKbps: UInt32(clamping: s.targetBitrate / 1000), fecPercent: s.fecPercent,
                             inputAllowed: peerCaps.contains(.inputV1) ? inputAllowed : nil, localUser: localGuard.active,
                             micReady: peerCaps.contains(.micOpus) ? micDriverInstalled : nil,
-                            window: s.window.map { $0.title.isEmpty ? $0.app : $0.title }, fps: UInt16(clamping: s.fps))
+                            window: s.window.map { $0.title.isEmpty ? $0.app : $0.title }, fps: UInt16(clamping: s.fps),
+                            curtain: curtainShown, localInputBlocked: localInputBlocked)
         await server.send([msg.message], to: s.peerKey)
     }
 
@@ -827,6 +923,7 @@ final class HostController {
                 guard let self else { return }
                 let resend = self.bulkOut.poll(nowNs: HostClock.nowNs())
                 if !resend.isEmpty { await server.send(resend, to: peer) }
+                self.pumpFiles()
             }
         }
     }
@@ -856,9 +953,163 @@ final class HostController {
                 return
             }
             saveFile(f)
+        case .fileSegment:
+            if let seg = try? FileSegment(m) { fileReceiver.handle(seg, nowNs: HostClock.nowNs()) }
         default:
             break
         }
+    }
+
+    // MARK: 1.9 privacy screen and files
+
+    private var curtainWanted: Bool {
+        guard let s = session else { return false }
+        if let c = sessionCurtain { return c }
+        switch curtainMode {
+        case .off: return false
+        case .away: return s.remote
+        case .always: return true
+        }
+    }
+
+    /// Puts the privacy screen and the input block in the state the settings and the phone ask for.
+    private func applyPrivacy() async {
+        guard let s = session else { return }
+        if curtainWanted {
+            let phone = streamHello?.deviceName ?? ""
+            let ids = curtain.prepare(phone: phone, skipping: s.mirroring ? nil : s.displayID)
+            curtain.onWindowsChanged = { [weak self] ids in
+                guard let self, let s = self.session else { return }
+                Task { if !(await s.exclude(ids)) { print("privacy: the new panels couldn't be left out of the picture") } }
+            }
+            if await s.exclude(ids) {
+                curtain.reveal()
+                if !curtainShown { print("privacy: this Mac's screen is hidden (\(ids.count) panel\(ids.count == 1 ? "" : "s"))") }
+                curtainShown = true
+            } else {
+                // Never show the phone a black screen: no curtain rather than a broken one.
+                print("privacy: couldn't leave the panels out of the picture; the screen stays visible")
+                curtain.hide()
+                curtainShown = false
+            }
+        } else if curtain.shown {
+            curtain.hide()
+            _ = await s.exclude([])
+            curtainShown = false
+            print("privacy: this Mac's screen is visible again")
+        }
+        let block = curtainShown && (sessionBlock ?? blockLocalInput) && InputInjector.allowed
+        if block {
+            blocker.onPanic = { [weak self] in self?.panic() }
+            blocker.onAttempt = { [weak self] in self?.curtain.localAttempt() }
+            blocker.start()
+        } else {
+            blocker.stop()
+        }
+        localInputBlocked = blocker.active
+        curtain.setInputBlocked(blocker.active)
+        await sendHostState()
+    }
+
+    /// The session ended: the keyboard and trackpad come back at once; the screen stays hidden a little
+    /// longer if the phone may just be reconnecting.
+    private func endPrivacy(phoneMayReturn: Bool) {
+        blocker.stop()
+        localInputBlocked = false
+        if curtain.shown {
+            if phoneMayReturn { curtain.linger(seconds: 20) } else { curtain.hide() }
+        }
+        curtainShown = false
+    }
+
+    /// Esc ×3 at the Mac.
+    private func panic() {
+        panicked = true
+        endPrivacy(phoneMayReturn: false)
+        Task { await disconnectAll() }
+    }
+
+    /// Prepares (hashes) and queues files and folders for the phone (1.9).
+    private func queueFilesForPhone(_ urls: [URL]) {
+        let what = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items"
+        lastFileNote = "Preparing \(what)…"
+        Task {
+            do {
+                let files = try await Task.detached(priority: .userInitiated) { try FileListing.prepare(urls) }.value
+                guard !files.isEmpty else { lastFileNote = "Nothing to send in \(what) (empty, or only hidden files)."; return }
+                fileQueue.pruneFinished()
+                fileQueue.enqueue(files)
+                let total = files.reduce(UInt64(0)) { $0 + $1.size }
+                lastFileNote = ""
+                print("file: queued \(files.count) file\(files.count == 1 ? "" : "s") (\(FileListing.size(total))) for the phone")
+                pumpFiles()
+            } catch {
+                lastFileNote = "Couldn't read \(what): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Sends what the file queue has ready: announcements, and segments as bulk transfers.
+    private func pumpFiles() {
+        guard let s = session, let server, peerCaps.contains(.filesV2), fileQueue.busy else {
+            if transferFraction != nil || !transferText.isEmpty { updateTransferText() }
+            return
+        }
+        let (control, segments) = fileQueue.poll(nowNs: HostClock.nowNs()) { FileListing.read($0, offset: $1, count: $2) }
+        if !control.isEmpty {
+            let peer = s.peerKey
+            Task { await server.send(control, to: peer) }
+        }
+        for m in segments { sendBulk(m) }
+        updateTransferText()
+        for item in fileQueue.items where item.phase.finished && !reported.contains(item.id) {
+            reported.insert(item.id)
+            switch item.phase {
+            case .saved(let name): print("file: \(name) saved on the phone")
+            case .failed(let why): lastFileNote = "Couldn't send \(item.file.name): \(why)"; print("file: \(item.file.path) failed: \(why)")
+            default: break
+            }
+        }
+    }
+    @ObservationIgnored private var reported: Set<UInt32> = []
+    @ObservationIgnored private var lastTransferUpdate = ContinuousClock.now
+
+    private func updateTransferText() {
+        let now = ContinuousClock.now
+        let sending = fileQueue.busy, receiving = fileReceiver.busy
+        // At most 4 redraws a second while bytes flow; at once when something starts or ends.
+        if (sending || receiving), transferFraction != nil, now - lastTransferUpdate < .milliseconds(250) { return }
+        lastTransferUpdate = now
+        if sending, let cur = fileQueue.current {
+            let t = fileQueue.totals
+            let files = t.files > 1 ? " (\(t.filesDone + 1) of \(t.files))" : ""
+            let verb = cur.phase == .checking ? "Checking" : "Sending"
+            transferText = "\(verb) \(cur.file.name)\(files) to the phone · \(FileListing.size(t.done)) of \(FileListing.size(t.total))"
+            transferFraction = t.total == 0 ? 0 : Double(t.done) / Double(t.total)
+        } else if receiving, let st = fileReceiver.status {
+            let files = st.count > 1 ? " (\(st.index + 1) of \(st.count))" : ""
+            let verb = st.state == .checking ? "Checking" : "Receiving"
+            transferText = "\(verb) \(st.name)\(files) · \(FileListing.size(st.received)) of \(FileListing.size(st.size))"
+            transferFraction = st.fraction
+        } else {
+            transferText = ""
+            transferFraction = nil
+            if case .failed(let why)? = fileReceiver.status?.state { lastFileNote = why }
+        }
+    }
+
+    /// The menu's "Cancel Transfers": stops sending and receiving. A partial file stays, so sending it
+    /// again later resumes it.
+    func cancelTransfers() {
+        let cancels = fileQueue.cancelAll()
+        if let s = session, let server, !cancels.isEmpty {
+            let peer = s.peerKey
+            Task { await server.send(cancels, to: peer) }
+        }
+        fileReceiver.cancel()
+        bulkOut.cancelAll()
+        lastFileNote = "Transfers cancelled"
+        updateTransferText()
     }
 
     /// A file from the phone: checked against its SHA-256, then written to Downloads under a safe, unused name.
@@ -957,7 +1208,7 @@ final class StreamSession {
     ///     4:2:0, 60 fps, a lower start bitrate, and one lighter refinement instead of a near-lossless one.
     init(peerKey: [UInt8], mode: DisplayMode, use444: Bool, adaptive: Bool, fec: Bool, clientCursor: Bool, mirror: Bool,
          remote: Bool = false, continuing: (frameId: UInt32, generation: UInt16)? = nil,
-         window windowID: CGWindowID? = nil, fpsCap: UInt16 = 0, server: HostSessionServer) async throws {
+         window windowID: CGWindowID? = nil, fpsCap: UInt16 = 0, excluding: [CGWindowID] = [], server: HostSessionServer) async throws {
         self.peerKey = peerKey
         self.mode = mode
         self.remote = remote
@@ -1063,7 +1314,14 @@ final class StreamSession {
         }
         // 4:4:4 needs full chroma from SCK, so BGRA (the pipeline converts to 444v); 4:2:0 takes 420v as is.
         try await capture.start(displayID: displayID, windowID: window?.id, width: w, height: h, fps: fps, showsCursor: !clientCursor,
-                                pixelFormat: use444 ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+                                pixelFormat: use444 ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                excluding: excluding)
+    }
+
+    /// Leaves these windows (the privacy screen) out of the picture. True once they are.
+    func exclude(_ ids: [CGWindowID]) async -> Bool {
+        if ProcessInfo.processInfo.environment["CLAMSHELL_TEST_PATTERN"] == "1" { return true }
+        return await capture.exclude(ids)
     }
 
     /// `CLAMSHELL_RATE_LOG=1`: one line per receiver report (10 a second), for netsim runs.

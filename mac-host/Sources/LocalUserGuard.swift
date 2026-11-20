@@ -2,14 +2,19 @@ import AppKit
 import UserNotifications
 
 /// Someone at the Mac during a session (docs/security.md T9). Watches *local* keyboard and mouse input
-/// (events Clamshell posts carry `InputInjector.tag` and are ignored):
-/// - any local key, click, scroll or real mouse move pauses the phone's input until the Mac has been
-///   quiet for 3 s, and the phone shows a banner;
+/// (events Clamshell posts carry `InputInjector.tag`, or end where it just moved the pointer, and are ignored):
+/// - any local key, click or scroll, or a deliberate pointer move (`moveDistance` points within
+///   `moveWindow` seconds), pauses the phone's input until the Mac has been quiet for 3 s, and the phone
+///   shows a banner. A hand brushing the trackpad while someone holds the phone next to the Mac doesn't;
 /// - Esc pressed three times within 1.5 s ends every session at once.
 /// Global monitors need Accessibility, which input injection already requires.
 @MainActor
 final class LocalUserGuard {
     static let quietSeconds = 3.0
+    /// How far the Mac's own pointer must travel, within `moveWindow`, to count as someone using it.
+    static let moveDistance = 40.0
+    static let moveWindow = 1.0
+    private var moves: [(at: Date, distance: Double)] = []
     private var monitor: Any?
     private var escapes: [Date] = []
     private var quietTimer: Timer?
@@ -27,11 +32,13 @@ final class LocalUserGuard {
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .mouseMoved]) { [weak self] e in
             // Ours: the tag, or (in case a coalesced event lost it) posted by this very process.
             let pid = e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? 0
+            let moved: Double? = e.type == .mouseMoved ? Double(hypot(e.deltaX, e.deltaY)) : nil
+            // A merged move can lose both; one landing where Clamshell just put the pointer is ours too.
             let tagged = e.cgEvent?.getIntegerValueField(.eventSourceUserData) == InputInjector.tag || pid == Int64(getpid())
+                || (moved != nil && e.cgEvent.map { InputInjector.postedMove(near: $0.location) } == true)
             let keyCode = e.type == .keyDown ? e.keyCode : nil
-            let small = e.type == .mouseMoved && abs(e.deltaX) + abs(e.deltaY) < 3
             let what = "\(Self.name(e.type)) from pid \(pid)\(pid > 0 ? " (\(Self.processName(pid)))" : "")"
-            MainActor.assumeIsolated { self?.saw(tagged: tagged, escape: keyCode == 53, ignorable: small, what: what) }
+            MainActor.assumeIsolated { self?.saw(tagged: tagged, escape: keyCode == 53, moved: moved, what: what) }
         }
     }
 
@@ -41,11 +48,22 @@ final class LocalUserGuard {
         quietTimer?.invalidate()
         quietTimer = nil
         escapes.removeAll()
+        moves.removeAll()
         if active { active = false; onChange(false) }
     }
 
-    private func saw(tagged: Bool, escape: Bool, ignorable: Bool, what: String) {
-        guard !tagged, !ignorable else { return }
+    private func saw(tagged: Bool, escape: Bool, moved: Double?, what: String) {
+        guard !tagged else { return }
+        if let moved, active {
+            guard moved >= 3 else { return }           // a twitch doesn't keep the pause going
+        } else if let moved {
+            // Only a deliberate move counts: brushes and twitches add up to a few points and then stop.
+            let now = Date()
+            moves = moves.filter { now.timeIntervalSince($0.at) < Self.moveWindow } + [(now, moved)]
+            let total = moves.reduce(0) { $0 + $1.distance }
+            guard total >= Self.moveDistance else { return }
+            moves.removeAll()
+        }
         if escape {
             let now = Date()
             escapes = escapes.filter { now.timeIntervalSince($0) < 1.5 } + [now]

@@ -7,6 +7,13 @@ import SwiftUI
 struct ClamshellClientApp: App {
     @State private var client = ClientController()
 
+    init() {
+        // One line at a time, so `xcrun devicectl device process launch --console` shows the "# …" notes as
+        // they happen (stdout to a pipe is otherwise held in a buffer until the app exits).
+        setvbuf(stdout, nil, _IOLBF, 0)
+        ConsoleFile.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView(client: client)
@@ -254,12 +261,12 @@ struct ReceivedFilesView: View {
     var body: some View {
         List {
             if client.receivedFiles.isEmpty {
-                Text("Nothing yet. On the Mac: Clamshell Host › Send a File to the iPhone…, or right-click a file in Finder › Services › Send to iPhone with Clamshell, while the phone is connected.")
+                Text("Nothing yet. On the Mac: Clamshell Host › Send Files to the iPhone…, or right-click a file in Finder › Services › Send to iPhone with Clamshell, while the phone is connected.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             ForEach(client.receivedFiles, id: \.self) { url in
                 ShareLink(item: url) {
-                    Label(url.lastPathComponent, systemImage: "doc")
+                    Label(url.lastPathComponent, systemImage: url.hasDirectoryPath ? "folder" : "doc")
                 }
                 .swipeActions { Button("Delete", role: .destructive) { client.deleteReceived(url) } }
             }
@@ -275,6 +282,7 @@ struct StreamView: View {
     @Environment(\.scenePhase) private var scenePhase
     /// fn, caps lock and sticky modifiers, shared by the two halves of the book keyboard.
     @State private var keyState = KeyboardState()
+    @State private var unlocking = false
 
     var body: some View {
         GeometryReader { geo in
@@ -289,6 +297,8 @@ struct StreamView: View {
         .background(Color(DeckStyle.base).ignoresSafeArea())
         .defersSystemGestures(on: .all)
         .onChange(of: scenePhase) { _, phase in if phase != .active { client.releaseInput() } }
+        .onChange(of: client.hud.macScreen) { _, screen in if screen != .locked { unlocking = false } }
+        .sheet(isPresented: $unlocking) { UnlockSheet(client: client) { unlocking = false } }
     }
 
     /// The fold in this view's coordinates, if the phone reports one.
@@ -305,7 +315,10 @@ struct StreamView: View {
             Color.black
             VideoSurface(client: client, directTouch: client.directTouch && client.input != nil, centered: centered)
             if !client.directTouch, let input = client.input { Trackpad(input: input, overlay: true, zoom: client.pictureZoom) }
-            if let banner = client.hud.macBanner { BannerView(text: banner, locked: client.hud.macScreen == .locked) }
+            if let banner = client.hud.macBanner {
+                let locked = client.hud.macScreen == .locked
+                BannerView(text: banner, locked: locked, unlock: locked && client.input != nil ? { unlocking = true } : nil)
+            }
             if client.showHUD { VStack { Spacer(); HUDView(hud: client.hud).padding(.bottom, 6) } }
         }
         .clipped()
@@ -469,17 +482,25 @@ struct SeamBar: View {
                 .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.8))
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(Color(DeckStyle.ember).opacity(0.25), in: Capsule())
-            if let note = client.lastClipboardNote { Text(note).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+            if let fraction = client.transferFraction {
+                ProgressView(value: fraction).frame(width: 60).tint(Color(DeckStyle.ember))
+                Text(client.transferText).font(.caption2.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                Button { client.cancelTransfers() } label: { Image(systemName: "xmark.circle.fill") }
+                    .accessibilityLabel("Cancel transfers")
+            } else if let note = client.lastClipboardNote {
+                Text(note).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
             Spacer()
             PostureMenu(client: client) { deckSettings = true }
             Button { client.showHUD.toggle() } label: { Image(systemName: "gauge.with.dots.needle.33percent") }
                 .accessibilityLabel("Stream statistics")
             Button { client.sendClipboard() } label: { Image(systemName: "doc.on.clipboard") }
                 .accessibilityLabel("Send the phone's clipboard to the Mac")
-            if client.macCaps.contains(.filesV1) {
+            if client.macCaps.contains(.filesV1) || client.macCaps.contains(.filesV2) {
                 Button { pickingFile = true } label: { Image(systemName: "square.and.arrow.up.on.square") }
-                    .accessibilityLabel("Send a file to the Mac's Downloads")
+                    .accessibilityLabel("Send files to the Mac's Downloads")
             }
+            if client.macCaps.contains(.curtain) { PrivacyMenu(client: client) }
             if let file = client.lastReceivedFile {
                 ShareLink(item: file) { Image(systemName: "tray.and.arrow.down") }
                     .accessibilityLabel("Share the file the Mac sent")
@@ -504,8 +525,10 @@ struct SeamBar: View {
         .padding(.horizontal, 12)
         .frame(height: 34)
         .background(Color(DeckStyle.base))
-        .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.item]) { result in
-            if case .success(let url) = result { client.sendFile(url) }
+        .fileImporter(isPresented: $pickingFile,
+                      allowedContentTypes: client.macCaps.contains(.filesV2) ? [.item, .folder] : [.item],
+                      allowsMultipleSelection: client.macCaps.contains(.filesV2)) { result in
+            if case .success(let urls) = result, !urls.isEmpty { client.sendFiles(urls) }
         }
         .sheet(isPresented: $deckSettings) {
             NavigationStack {
@@ -615,14 +638,95 @@ struct DeckSettingsView: View {
 struct BannerView: View {
     let text: String
     let locked: Bool
+    /// Shown as an "Unlock…" button when the Mac is locked and takes keys from the phone.
+    var unlock: (() -> Void)? = nil
+
     var body: some View {
-        Label(text, systemImage: locked ? "lock.fill" : "exclamationmark.circle")
-            .font(.caption)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(.black.opacity(0.75), in: Capsule())
-            .padding(.top, 12)
-            .allowsHitTesting(false)
+        HStack(spacing: 10) {
+            Label(text, systemImage: locked ? "lock.fill" : "exclamationmark.circle")
+                .allowsHitTesting(false)
+            if let unlock {
+                Button("Unlock…", action: unlock)
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(DeckStyle.ember))
+                    .controlSize(.small)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(.black.opacity(0.75), in: Capsule())
+        .padding(.top, 12)
+        .allowsHitTesting(unlock != nil)
+    }
+}
+
+/// Types the Mac's login password from the phone: the Mac's own lock screen takes it as key presses, so
+/// nothing new runs on the Mac. The text lives only in this sheet's state and is cleared once typed.
+struct UnlockSheet: View {
+    @Bindable var client: ClientController
+    let done: () -> Void
+    @State private var password = ""
+    @State private var problem: String?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("Mac password", text: $password)
+                        .textContentType(.password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($focused)
+                        .submitLabel(.go)
+                        .onSubmit(type)
+                    Button("Type on the Mac", action: type).disabled(password.isEmpty)
+                } footer: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let problem { Text(problem).foregroundStyle(.orange) }
+                        Text("Clamshell presses the keys for each character on the Mac's login screen, then Return. It isn't saved or logged. If Caps Lock is on at the Mac, turn it off first with the Caps Lock key on the deck.")
+                    }
+                }
+            }
+            .navigationTitle("Unlock the Mac")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { password = ""; done() } } }
+        }
+        .presentationDetents([.medium])
+        .onAppear { focused = true }
+        .onDisappear { password = "" }
+    }
+
+    private func type() {
+        guard !password.isEmpty else { return }
+        problem = client.typeOnMac(password)
+        guard problem == nil else { return }
+        password = ""
+        done()
+    }
+}
+
+/// Seam bar › privacy: hide the Mac's own screen while the phone uses it, and turn its keyboard and
+/// trackpad off. Applies to this session; the Mac's menu sets the default.
+struct PrivacyMenu: View {
+    @Bindable var client: ClientController
+
+    var body: some View {
+        Menu {
+            Toggle("Hide the Mac's screen", isOn: Binding(
+                get: { client.hud.macCurtain ?? false },
+                set: { client.setPrivacy(curtain: $0) }))
+            Toggle("Turn off the Mac's keyboard and trackpad", isOn: Binding(
+                get: { client.hud.macInputBlocked ?? false },
+                set: { client.setPrivacy(curtain: $0 ? true : nil, blockLocalInput: $0) }))
+            .disabled(client.input == nil)
+            Text("Someone at the Mac can press Esc three times to end the session.")
+        } label: {
+            Image(systemName: client.hud.macCurtain == true ? "eye.slash.fill" : "eye")
+        }
+        .accessibilityLabel("Privacy on the Mac")
     }
 }
 
@@ -648,5 +752,43 @@ struct HUDView: View {
         .padding(8)
         .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
         .allowsHitTesting(false)
+    }
+}
+
+/// Keeps a copy of the console on the phone, so a test away from the cable and the home Wi-Fi (where
+/// `devicectl --console` can't reach it) can be read afterwards. This run: Library/Application Support/
+/// console.log, the one before: console.1.log, at most 20 MB each. Copy it off with
+/// `xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer
+///  --domain-identifier dev.ibrahimogod.clamshell.client --source "Library/Application Support/console.log" --destination .`
+enum ConsoleFile {
+    static func start() {
+        let fm = FileManager.default
+        guard let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("console.log"), old = dir.appendingPathComponent("console.1.log")
+        try? fm.removeItem(at: old)
+        try? fm.moveItem(at: url, to: old)
+        guard fm.createFile(atPath: url.path, contents: nil), let file = try? FileHandle(forWritingTo: url) else { return }
+        var fds: [Int32] = [0, 0]
+        guard pipe(&fds) == 0 else { return }
+        let console = dup(STDOUT_FILENO)
+        guard console >= 0, dup2(fds[1], STDOUT_FILENO) >= 0 else { close(fds[0]); close(fds[1]); return }
+        close(fds[1])
+        let reader = fds[0]
+        let started = Date()
+        Thread.detachNewThread {
+            var buf = [UInt8](repeating: 0, count: 4096)
+            var written = 0
+            while true {
+                let n = read(reader, &buf, buf.count)
+                if n <= 0 { break }
+                _ = buf.withUnsafeBytes { write(console, $0.baseAddress, n) }
+                guard written < 20_000_000 else { continue }
+                // Seconds since launch on each chunk, to line the phone's notes up with the Mac's log.
+                let stamp = String(format: "[%.1f] ", Date().timeIntervalSince(started))
+                file.write(Data(stamp.utf8) + Data(buf[0..<n]))
+                written += n
+            }
+        }
     }
 }

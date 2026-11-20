@@ -76,7 +76,28 @@ struct FixtureTests {
         },
         Sample(name: "hello_1_8", message: FixtureTests.hello18.message) { try Hello($0) == FixtureTests.hello18 },
         Sample(name: "host_state_1_8", message: FixtureTests.hostState18.message) { try HostState($0) == FixtureTests.hostState18 },
+        // Protocol 1.9: resumable files and folders, privacy screen.
+        Sample(name: "file_begin", message: FixtureTests.fileBegin.message) { try FileBegin($0) == FixtureTests.fileBegin },
+        Sample(name: "file_accept", message: FixtureTests.fileAccept.message) { try FileAccept($0) == FixtureTests.fileAccept },
+        Sample(name: "file_segment", message: FixtureTests.fileSegment.message) { try FileSegment($0) == FixtureTests.fileSegment },
+        Sample(name: "file_progress", message: FixtureTests.fileProgress.message) { try FileProgress($0) == FixtureTests.fileProgress },
+        Sample(name: "file_cancel", message: FileCancel(transferId: 0, batchId: 41).message) { try FileCancel($0) == FileCancel(transferId: 0, batchId: 41) },
+        Sample(name: "privacy_request", message: FixtureTests.privacy.message) { try PrivacyRequest($0) == FixtureTests.privacy },
+        Sample(name: "hello_1_9", message: FixtureTests.hello19.message) { try Hello($0) == FixtureTests.hello19 },
+        Sample(name: "host_state_1_9", message: FixtureTests.hostState19.message) { try HostState($0) == FixtureTests.hostState19 },
     ]
+
+    static let fileBegin = FileBegin(transferId: 0x0102_0304, batchId: 41, path: "Album/2026/beach.heic", size: 6_000_000_000,
+                                     sha256: (0..<32).map { UInt8($0) }, modified: 1_795_000_000, index: 3, count: 12)
+    static let fileAccept = FileAccept(transferId: 0x0102_0304, status: .accepted, offset: 4_194_304)
+    static let fileSegment = FileSegment(transferId: 0x0102_0304, offset: 4_194_304, data: [0xDE, 0xAD, 0xBE, 0xEF])
+    static let fileProgress = FileProgress(transferId: 0x0102_0304, confirmed: 6_000_000_000, state: .saved, savedName: "Album 2/2026/beach.heic")
+    static let privacy = PrivacyRequest(curtain: true, blockLocalInput: true)
+    static let hello19 = Hello(protoMinor: 9, appVersion: "1.2.0", build: 8,
+                               capabilities: [.hevc444Decode, .filesToPhone, .micOpus, .windowStreaming, .frameRateCap, .filesV2, .curtain],
+                               maxFps: 60, deviceName: "iPhone", connectionId: 0xC1A5_0000_0002, appExpires: 1_796_000_000)
+    static let hostState19 = HostState(screen: .locked, keepsAwake: true, targetBitrateKbps: 12_000, inputAllowed: true,
+                                       fps: 60, curtain: true, localInputBlocked: true)
 
     static let windows = WindowList(windows: [
         StreamableWindow(id: 4242, app: "Xcode", title: "Clamshell — HostController.swift", width: 1512, height: 944),

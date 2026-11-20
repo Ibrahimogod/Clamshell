@@ -85,10 +85,14 @@ click it for the menu.
    Clamshell Host**) and open it again from /Applications: macOS applies the grant only to a new process.
 3. **Keyboard & mouse:** click **Allow keyboard & mouse control…**, then turn **ClamshellHost** on in
    System Settings › Privacy & Security › **Accessibility** (called **Device Control** on macOS 27). Until
-   then the phone shows the picture but its keys and trackpad do nothing.
-4. **Notifications:** allow them to get a notice whenever a phone connects.
-5. **Open at login** in the menu, if you want the host always running.
-6. **The phone's microphone (optional):** to use the phone as the Mac's microphone, install the Clamshell
+   then the phone shows the picture but its keys and trackpad do nothing. The same grant lets the host
+   turn this Mac's own keyboard and trackpad off during a session, if you choose that in the menu.
+4. **Privacy screen:** by default the Mac's displays go black while a phone uses it from away (the phone
+   still sees the real screen). Choose **Always** or **Never** under **Hide this Mac's screen during a
+   session** in the menu. Nothing to grant: it uses the Screen Recording permission from step 2.
+5. **Notifications:** allow them to get a notice whenever a phone connects.
+6. **Open at login** in the menu, if you want the host always running.
+7. **The phone's microphone (optional):** to use the phone as the Mac's microphone, install the Clamshell
    Microphone driver. It goes into `/Library/Audio/Plug-Ins/HAL`, which needs your password, so run it
    yourself in Terminal:
 

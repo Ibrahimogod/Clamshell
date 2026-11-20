@@ -2,7 +2,7 @@
 /// bump `major` only for incompatible ones (and give old peers a clean `Incompatible`).
 public enum ProtocolVersion {
     public static let major: UInt16 = 1
-    public static let minor: UInt16 = 8
+    public static let minor: UInt16 = 9
 }
 
 /// First byte of every packet on every path (outer layer, ADR-0011 §1).
@@ -93,6 +93,7 @@ public enum MessageType: Equatable, Hashable, Sendable {
     case windowListRequest  // 0x0026 (1.8)
     case windowList         // 0x0027 (1.8)
     case sourceRequest      // 0x0028 (1.8)
+    case privacyRequest     // 0x0029 (1.9)
     case cursorShape        // 0x0030 (1.2)
     case bulkChunk          // 0x0040 (1.2)
     case bulkAck            // 0x0041 (1.2)
@@ -105,6 +106,11 @@ public enum MessageType: Equatable, Hashable, Sendable {
     case cursorPosition     // 0x0210 (1.2)
     case clipboardOffer     // 0x0301 (1.2)
     case fileOffer          // 0x0302 (1.5)
+    case fileBegin          // 0x0303 (1.9)
+    case fileAccept         // 0x0304 (1.9)
+    case fileSegment        // 0x0305 (1.9)
+    case fileProgress       // 0x0306 (1.9)
+    case fileCancel         // 0x0307 (1.9)
     case audioPacket        // 0x0401 (1.5)
     // video
     case videoFormat        // 0x0101
@@ -129,6 +135,7 @@ public enum MessageType: Equatable, Hashable, Sendable {
         case 0x0026: self = .windowListRequest
         case 0x0027: self = .windowList
         case 0x0028: self = .sourceRequest
+        case 0x0029: self = .privacyRequest
         case 0x0030: self = .cursorShape
         case 0x0040: self = .bulkChunk
         case 0x0041: self = .bulkAck
@@ -141,6 +148,11 @@ public enum MessageType: Equatable, Hashable, Sendable {
         case 0x0210: self = .cursorPosition
         case 0x0301: self = .clipboardOffer
         case 0x0302: self = .fileOffer
+        case 0x0303: self = .fileBegin
+        case 0x0304: self = .fileAccept
+        case 0x0305: self = .fileSegment
+        case 0x0306: self = .fileProgress
+        case 0x0307: self = .fileCancel
         case 0x0401: self = .audioPacket
         case 0x0101: self = .videoFormat
         case 0x0102: self = .videoFragment
@@ -166,6 +178,7 @@ public enum MessageType: Equatable, Hashable, Sendable {
         case .windowListRequest: 0x0026
         case .windowList: 0x0027
         case .sourceRequest: 0x0028
+        case .privacyRequest: 0x0029
         case .cursorShape: 0x0030
         case .bulkChunk: 0x0040
         case .bulkAck: 0x0041
@@ -178,6 +191,11 @@ public enum MessageType: Equatable, Hashable, Sendable {
         case .cursorPosition: 0x0210
         case .clipboardOffer: 0x0301
         case .fileOffer: 0x0302
+        case .fileBegin: 0x0303
+        case .fileAccept: 0x0304
+        case .fileSegment: 0x0305
+        case .fileProgress: 0x0306
+        case .fileCancel: 0x0307
         case .audioPacket: 0x0401
         case .videoFormat: 0x0101
         case .videoFragment: 0x0102

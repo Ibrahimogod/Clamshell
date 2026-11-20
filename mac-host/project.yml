@@ -27,7 +27,7 @@ targets:
           destination: plugins
       - package: ClamshellKit
         products: [ClamshellWire, ClamshellSession, ClamshellTransport, ClamshellStream, ClamshellVideo,
-                   ClamshellRateControl, ClamshellVirtualDisplay, ClamshellKeychain, ClamshellBench, ClamshellInput]
+                   ClamshellRateControl, ClamshellVirtualDisplay, ClamshellKeychain, ClamshellBench, ClamshellInput, ClamshellFiles]
     info:
       path: Generated/Info.plist
       properties:
@@ -51,8 +51,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).host
-        MARKETING_VERSION: 1.1.0
-        CURRENT_PROJECT_VERSION: 7
+        MARKETING_VERSION: 1.2.0
+        CURRENT_PROJECT_VERSION: 8
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_APP_SANDBOX: NO
@@ -85,8 +85,8 @@ targets:
         PRODUCT_NAME: ClamshellMicrophone
         PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).microphone
         WRAPPER_EXTENSION: driver
-        MARKETING_VERSION: 1.1.0
-        CURRENT_PROJECT_VERSION: 7
+        MARKETING_VERSION: 1.2.0
+        CURRENT_PROJECT_VERSION: 8
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES

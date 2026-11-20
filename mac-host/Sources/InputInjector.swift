@@ -16,6 +16,25 @@ import os
 final class InputInjector: @unchecked Sendable {
     static let tag: Int64 = 0x434C_414D               // 'CLAM'
 
+    /// Where Clamshell last put the pointer, and when (global points, `HostClock` ns). macOS sometimes hands
+    /// the local-user monitor a merged move that has lost the tag and the pid (bursts of moves, as on mobile
+    /// data); one that ends where we just posted is ours, not someone at the Mac.
+    private static let recentMoves = OSAllocatedUnfairLock<[(ns: UInt64, at: CGPoint)]>(initialState: [])
+    static func postedMove(near p: CGPoint, withinNs: UInt64 = 300_000_000) -> Bool {
+        let now = HostClock.nowNs()
+        return recentMoves.withLock { m in
+            m.contains { now &- $0.ns < withinNs && abs($0.at.x - p.x) <= 2 && abs($0.at.y - p.y) <= 2 }
+        }
+    }
+    private static func recordMove(_ p: CGPoint) {
+        let now = HostClock.nowNs()
+        recentMoves.withLock { m in
+            m.removeAll { now &- $0.ns > 300_000_000 }
+            if m.count >= 64 { m.removeFirst(m.count - 63) }
+            m.append((now, p))
+        }
+    }
+
     private let queue = DispatchQueue(label: "clamshell.input", qos: .userInteractive)
     private let displayID: CGDirectDisplayID
     /// Cursor reports are in the stream picture's points (picture pixels / scale), which is what the phone
@@ -30,6 +49,10 @@ final class InputInjector: @unchecked Sendable {
     private var hotkeys: SymbolicHotkeys
     private var lastCursorReportNs: UInt64 = 0
     private var cursorDirty = false
+    /// A move was posted since the last report: report where we put the pointer, not where the window
+    /// server says it is (it may not have caught up yet, and the phone would snap back by that move).
+    private var movedSinceReport = false
+    private var lastMoveNs: UInt64 = 0
     private(set) var shapeId: UInt64 = 0
     /// A streamed window's frame (1.8), in global points: the pointer stays in it and cursor reports are
     /// relative to it. Nil: the whole display.
@@ -135,7 +158,9 @@ final class InputInjector: @unchecked Sendable {
             lastCursorReportNs = now
             cursorDirty = false
             let b = bounds
-            let here = CGEvent(source: nil)?.location ?? position ?? .zero
+            let real = CGEvent(source: nil)?.location ?? position ?? .zero
+            let here = movedSinceReport ? (position ?? real) : real
+            movedSinceReport = false
             let onDisplay = b.contains(here)
             let p = onDisplay ? here : (position ?? CGPoint(x: b.midX, y: b.midY))
             reportCursor(CursorPosition(appliedSeq: receiver.appliedPointerSeq, x: Int32((p.x - b.minX) / max(b.width, 1) * reportSize.width * 16),
@@ -173,8 +198,12 @@ final class InputInjector: @unchecked Sendable {
 
     private func current() -> CGPoint {
         let b = bounds
-        // Follow the real cursor when it is on our display (an app warped it, or someone at the Mac moved
-        // it); otherwise bring it back to where the phone left it.
+        // Mid-stream, build on where we last put the pointer: the window server applies our moves a little
+        // later, so a burst of them (mobile data delivers moves in clumps) would each start from the same
+        // stale spot and most of the distance would be lost, then the phone's pointer snapped back.
+        if let p = position, HostClock.nowNs() &- lastMoveNs < 100_000_000, b.contains(p) { return p }
+        // Otherwise follow the real cursor when it is on our display (an app warped it, or someone at the Mac
+        // moved it); otherwise bring it back to where the phone left it.
         if let here = CGEvent(source: nil)?.location, b.contains(here) { position = here; return here }
         return position ?? CGPoint(x: b.midX, y: b.midY)
     }
@@ -184,6 +213,8 @@ final class InputInjector: @unchecked Sendable {
         let p = CGPoint(x: min(max(target.x, b.minX), b.maxX - 1), y: min(max(target.y, b.minY), b.maxY - 1))
         position = p
         cursorDirty = true
+        movedSinceReport = true
+        lastMoveNs = HostClock.nowNs()
         let (type, button): (CGEventType, CGMouseButton) =
             buttons.contains(.left) ? (.leftMouseDragged, .left) :
             buttons.contains(.right) ? (.rightMouseDragged, .right) :
@@ -192,6 +223,7 @@ final class InputInjector: @unchecked Sendable {
         e.setIntegerValueField(.mouseEventDeltaX, value: Int64(dx.rounded()))
         e.setIntegerValueField(.mouseEventDeltaY, value: Int64(dy.rounded()))
         e.flags = Self.cgFlags(receiver.modifiers)
+        Self.recordMove(p)
         e.post(tap: .cghidEventTap)
     }
 

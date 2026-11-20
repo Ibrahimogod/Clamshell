@@ -1,4 +1,5 @@
 import ClamshellBench
+import ClamshellFiles
 import ClamshellKeychain
 import ClamshellInput
 import LocalAuthentication
@@ -56,12 +57,15 @@ final class HUDModel {
     var micReady: Bool?
     var window: String?
     var macFps = 0
+    /// 1.9 Macs: whether the Mac's own screen is hidden, and its keyboard and trackpad off (nil: not reported).
+    var macCurtain: Bool?
+    var macInputBlocked: Bool?
 
     /// A banner over the stream when the Mac's screen isn't what the user expects to see.
     var macBanner: String? {
         switch macScreen {
         case _ where macLocalUser: "Someone is using the Mac. Your input is paused until they stop."
-        case .locked: "The Mac is locked. Unlock it at the Mac to continue."
+        case .locked: "The Mac is locked."
         case .screenSaver: macKeepsAwake ? "The Mac's screen saver is running." : "The Mac's screen saver is running (move the mouse at the Mac)."
         default:
             inputAllowed == false ? "Allow keyboard & mouse on the Mac: menu bar › Clamshell Host › Allow keyboard & mouse control." : nil
@@ -168,6 +172,19 @@ final class ClientController {
     private var bulkOut = BulkSender()
     private var bulkIn = BulkReceiver()
     private var clipboardCount: UInt64 = 0
+    /// Files and folders to the Mac and from it (1.9): any size, resumed after a dropped connection.
+    @ObservationIgnored private var fileQueue = FileSendQueue()
+    /// The Mac `fileQueue` belongs to; connecting to another Mac drops it.
+    @ObservationIgnored private var fileMac: Data?
+    @ObservationIgnored private let fileReceiver = FileReceiver(root: ClientController.receivedFolder
+        ?? FileManager.default.temporaryDirectory.appendingPathComponent("From Mac", isDirectory: true))
+    /// Picked files and folders stay readable (security-scoped) while they are being sent.
+    @ObservationIgnored private var scopedPicks: [URL] = []
+    @ObservationIgnored private var reportedFiles: Set<UInt32> = []
+    @ObservationIgnored private var lastTransferUpdate = ContinuousClock.now
+    /// What is being sent or received, and how far (nil: nothing).
+    private(set) var transferText = ""
+    private(set) var transferFraction: Double?
 
     /// Presentation-side counters, written by the renderer on the main actor.
     var presentedFrames = 0
@@ -223,6 +240,7 @@ final class ClientController {
         }
         if let m = pairedMac { applySelection(m) }
         receivedFiles = Self.listReceivedFiles()
+        setUpFileReceiver()
         startPowerWatch()
         try? keychain.delete("dev-code")                       // M1 development pairing is gone
         posture.onDisplayChange = { [weak self] p in self?.displayPostureChanged(p) }
@@ -550,6 +568,9 @@ final class ClientController {
         input?.stop()
         input = nil
         hud.inputAllowed = nil
+        hud.macCurtain = nil
+        hud.macInputBlocked = nil
+        fileReceiver.suspend()
         if let c = connection { Task { await c.close() } }
         connection = nil
         udp = nil
@@ -624,7 +645,8 @@ final class ClientController {
     private func run(host: BonjourBrowser.Found, mac: PairedMac) async {
         do {
             var caps: Capabilities = [.hevc420Decode, .refinementFrames, .benchBarcode, .receiverReports, .fecXor,
-                                      .inputV1, .clientCursor, .clipboardV1, .filesToPhone, .micOpus, .windowStreaming, .frameRateCap]
+                                      .inputV1, .clientCursor, .clipboardV1, .filesToPhone, .micOpus, .windowStreaming, .frameRateCap,
+                                      .filesV2, .curtain]
             if DecodeProbe.cached444 == true { caps.insert(.hevc444Decode) }
             caps.insert(.audioOpus)                              // muting is local, so a later unmute plays at once
             let wanted = PostureModel.mode(for: posture.display)
@@ -681,6 +703,12 @@ final class ClientController {
             pipeline.start()
             bulkOut = BulkSender()
             bulkIn = BulkReceiver()
+            if fileMac == mac.publicKey {
+                fileQueue.reconnected()                  // resume what was being sent
+            } else {
+                fileQueue = FileSendQueue()
+                fileMac = mac.publicKey
+            }
             if macHello.capabilities.contains(.inputV1) {
                 let mode = displayMode
                 let ic = InputClient(connection: conn, displaySize: CGSize(width: Double(mode.widthPoints), height: Double(mode.heightPoints)))
@@ -742,6 +770,7 @@ final class ClientController {
                     guard let self else { return }
                     let resend = self.bulkOut.poll(nowNs: PhoneClock.nowNs())
                     if !resend.isEmpty { await conn.send(resend) }
+                    self.pumpFiles()
                     if let name = self.sendingFile {
                         if let p = self.bulkOut.progress { self.lastClipboardNote = "Sending \(name) · \(Int(p * 100))%" } else {
                             self.lastClipboardNote = "Sent \(name) to the Mac's Downloads"
@@ -793,6 +822,9 @@ final class ClientController {
                     if h.window != hud.window { print("# streaming: \(h.window ?? "the whole screen")") }
                     hud.window = h.window
                     hud.macFps = Int(h.fps)
+                    if h.curtain != hud.macCurtain { print("# mac screen hidden: \(h.curtain.map(String.init) ?? "-")") }
+                    hud.macCurtain = h.curtain
+                    hud.macInputBlocked = h.localInputBlocked
                     hud.rateText = String(format: "target %.1f Mbit/s", Double(h.targetBitrateKbps) / 1000) + (h.fecPercent > 0 ? " · FEC \(h.fecPercent)%" : "")
                 }
             case .hostStats:
@@ -810,6 +842,14 @@ final class ClientController {
                 if let done { received(done) }
             case .bulkAck:
                 if let a = try? BulkAck(m) { bulkOut.handle(a) }
+            case .fileBegin:
+                if let b = try? FileBegin(m) { fileReceiver.handle(b, nowNs: t4) }
+            case .fileAccept:
+                if let a = try? FileAccept(m) { fileQueue.handle(a, nowNs: t4); pumpFiles() }
+            case .fileProgress:
+                if let p = try? FileProgress(m) { fileQueue.handle(p, nowNs: t4); pumpFiles() }
+            case .fileCancel:
+                if let c = try? FileCancel(m) { fileQueue.handle(c); fileReceiver.handle(c); pumpFiles() }
             case .cursorShape, .clipboardOffer, .keyboardLayout, .windowList:
                 received(m)
             case .goodbye:
@@ -841,6 +881,8 @@ final class ClientController {
             clipboardCount = UInt64(UIPasteboard.general.changeCount)
         case .fileOffer:
             if let f = try? FileOffer(m) { saveReceived(f) }
+        case .fileSegment:
+            if let seg = try? FileSegment(m) { fileReceiver.handle(seg, nowNs: PhoneClock.nowNs()) }
         case .windowList:
             if let l = try? WindowList(m) { windows = l.windows; loadingWindows = false; windowsTimedOut = false }
         default:
@@ -857,7 +899,8 @@ final class ClientController {
 
     static func listReceivedFiles() -> [URL] {
         guard let dir = receivedFolder,
-              let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+              let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
+                                                                      options: [.skipsHiddenFiles]) else { return [] }
         let date = { (u: URL) in (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
         return urls.sorted { date($0) > date($1) }
     }
@@ -1022,6 +1065,155 @@ final class ClientController {
                 if chunks.count > 16 { try? await Task.sleep(for: .milliseconds(5)) }
             }
         }
+    }
+
+    /// Files and folders picked in the Files app. A 1.9 Mac takes any size and folders; an older one one file
+    /// at a time, up to 32 MB.
+    func sendFiles(_ urls: [URL]) {
+        guard macCaps.contains(.filesV2) else {
+            for url in urls { sendFile(url) }
+            return
+        }
+        guard connection != nil else { return }
+        // Keep each pick readable until its files are sent (a folder's access covers what's inside).
+        let picks = urls.filter { $0.startAccessingSecurityScopedResource() }
+        scopedPicks += picks
+        let what = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items"
+        lastClipboardNote = "Preparing \(what)…"
+        Task {
+            do {
+                let files = try await Task.detached(priority: .userInitiated) { try FileListing.prepare(urls) }.value
+                guard !files.isEmpty else { lastClipboardNote = "Nothing to send in \(what)"; releasePicks(); return }
+                fileQueue.pruneFinished()
+                fileQueue.enqueue(files)
+                print("# file: queued \(files.count) for the Mac (\(FileListing.size(files.reduce(0) { $0 + $1.size })))")
+                lastClipboardNote = nil
+                pumpFiles()
+            } catch {
+                lastClipboardNote = "Couldn't read \(what): \(error.localizedDescription)"
+                releasePicks()
+            }
+        }
+    }
+
+    private func releasePicks() {
+        guard !fileQueue.busy else { return }
+        for u in scopedPicks { u.stopAccessingSecurityScopedResource() }
+        scopedPicks.removeAll()
+    }
+
+    private func setUpFileReceiver() {
+        fileReceiver.send = { [weak self] m in
+            guard let conn = self?.connection else { return }
+            Task { await conn.send([m]) }
+        }
+        fileReceiver.onChange = { [weak self] in self?.updateTransferText() }
+        fileReceiver.onSaved = { [weak self] url in
+            guard let self else { return }
+            receivedFiles = Self.listReceivedFiles()
+            lastReceivedFile = url
+            lastClipboardNote = "From the Mac: \(url.lastPathComponent)"
+            print("# file from the Mac: \(url.lastPathComponent)")
+        }
+    }
+
+    /// Sends what the file queue has ready: announcements now, segments as bulk transfers.
+    private func pumpFiles() {
+        guard let conn = connection, macCaps.contains(.filesV2), fileQueue.busy else {
+            if transferFraction != nil || !transferText.isEmpty { updateTransferText() }
+            if !scopedPicks.isEmpty, !fileQueue.busy { releasePicks() }
+            return
+        }
+        let (control, segments) = fileQueue.poll(nowNs: PhoneClock.nowNs()) { FileListing.read($0, offset: $1, count: $2) }
+        var chunks: [InnerMessage] = []
+        for seg in segments { chunks += bulkOut.send(seg, nowNs: PhoneClock.nowNs()) }
+        if !control.isEmpty || !chunks.isEmpty {
+            Task {
+                if !control.isEmpty { await conn.send(control) }
+                // In groups, so a window of segments doesn't overrun the path at once.
+                for group in stride(from: 0, to: chunks.count, by: 16) {
+                    await conn.send(Array(chunks[group..<min(group + 16, chunks.count)]))
+                    if chunks.count > 16 { try? await Task.sleep(for: .milliseconds(5)) }
+                }
+            }
+        }
+        for item in fileQueue.items where item.phase.finished && !reportedFiles.contains(item.id) {
+            reportedFiles.insert(item.id)
+            if case .failed(let why) = item.phase { lastClipboardNote = "Couldn't send \(item.file.name): \(why)" }
+        }
+        updateTransferText()
+    }
+
+    private func updateTransferText() {
+        let now = ContinuousClock.now
+        let sending = fileQueue.busy, receiving = fileReceiver.busy
+        if sending || receiving, transferFraction != nil, now - lastTransferUpdate < .milliseconds(250) { return }
+        lastTransferUpdate = now
+        if sending, let cur = fileQueue.current {
+            let t = fileQueue.totals
+            let n = t.files > 1 ? " \(t.filesDone + 1)/\(t.files)" : ""
+            transferText = "\(cur.phase == .checking ? "Checking" : "Sending") \(cur.file.name)\(n) · \(FileListing.size(t.done)) of \(FileListing.size(t.total))"
+            transferFraction = t.total == 0 ? 0 : Double(t.done) / Double(t.total)
+        } else if receiving, let st = fileReceiver.status {
+            let n = st.count > 1 ? " \(st.index + 1)/\(st.count)" : ""
+            transferText = "\(st.state == .checking ? "Checking" : "Receiving") \(st.name)\(n) · \(FileListing.size(st.received)) of \(FileListing.size(st.size))"
+            transferFraction = st.fraction
+        } else {
+            if transferFraction != nil, let last = fileQueue.items.last, case .saved = last.phase {
+                let t = fileQueue.items.count
+                lastClipboardNote = t == 1 ? "Sent \(last.file.name) to the Mac's Downloads" : "Sent \(t) files to the Mac's Downloads"
+            }
+            if case .failed(let why)? = fileReceiver.status?.state { lastClipboardNote = why }
+            transferText = ""
+            transferFraction = nil
+        }
+    }
+
+    /// Stops sending and receiving. What arrived is kept on the other side, so sending again resumes.
+    func cancelTransfers() {
+        let cancels = fileQueue.cancelAll()
+        if let conn = connection, !cancels.isEmpty { Task { await conn.send(cancels) } }
+        fileReceiver.cancel()
+        bulkOut.cancelAll()
+        lastClipboardNote = "Transfers cancelled"
+        updateTransferText()
+        releasePicks()
+    }
+
+    // MARK: privacy screen and unlocking (1.9)
+
+    /// Asks the Mac to hide its own screen, and to turn its keyboard and trackpad off, for this session.
+    func setPrivacy(curtain: Bool? = nil, blockLocalInput: Bool? = nil) {
+        guard let conn = connection, macCaps.contains(.curtain) else { return }
+        let m = PrivacyRequest(curtain: curtain, blockLocalInput: blockLocalInput).message
+        Task { await conn.send([m]) }
+    }
+
+    /// Types `text` on the Mac, then Return: the unlock sheet. Nothing is kept or logged. Returns why it
+    /// can't, or nil once it has started typing.
+    func typeOnMac(_ text: String) -> String? {
+        guard let input else { return "This Mac doesn't take keys from the phone." }
+        let r = PasswordTyping.presses(for: text, layout: input.keyboardLayout)
+        guard let presses = r.presses else {
+            let ch = r.unmapped.map { String($0) } ?? "?"
+            return "“\(ch)” isn't on the Mac's keyboard layout. Type the password at the Mac, or switch its layout."
+        }
+        Task {
+            // A little apart, so each key is its own event on the Mac.
+            let gap = Duration.milliseconds(12)
+            for p in presses {
+                if p.shift { input.key(PasswordTyping.leftShift, down: true); try? await Task.sleep(for: gap) }
+                input.key(p.usage, down: true)
+                try? await Task.sleep(for: gap)
+                input.key(p.usage, down: false)
+                try? await Task.sleep(for: gap)
+                if p.shift { input.key(PasswordTyping.leftShift, down: false); try? await Task.sleep(for: gap) }
+            }
+            input.key(PasswordTyping.returnKey, down: true)
+            try? await Task.sleep(for: gap)
+            input.key(PasswordTyping.returnKey, down: false)
+        }
+        return nil
     }
 
     /// Phone → Mac Downloads (M5), up to `FileOffer.maxBytes`. The Mac saves it only if its

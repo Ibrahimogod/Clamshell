@@ -29,6 +29,12 @@ public struct Capabilities: OptionSet, Sendable, Hashable {
     public static let windowStreaming = Capabilities(rawValue: 1 << 16)
     /// 1.8: the phone caps the frame rate (`FrameRateRequest`), for its battery and heat saver.
     public static let frameRateCap = Capabilities(rawValue: 1 << 17)
+    /// 1.9: files of any size and whole folders, in pieces the receiver confirms, resumable after a drop
+    /// (`FileBegin`, `FileAccept`, `FileSegment`, `FileProgress`, `FileCancel`), both directions.
+    public static let filesV2 = Capabilities(rawValue: 1 << 18)
+    /// 1.9: the Mac hides its own screen and can turn off its keyboard and trackpad during a session
+    /// (`PrivacyRequest`, `HostState` tags 10 and 11).
+    public static let curtain = Capabilities(rawValue: 1 << 19)
 }
 
 /// A display mode the client can show at 1:1 pixels (ADR-0007).
