@@ -106,8 +106,9 @@ Status: Proposed (Checkpoint 2). Related ADRs: [0001](adr/0001-custom-noise-tran
 
 ## 7. Router and home hardening (goes into SETUP.md)
 
-1. Archer VR400: turn **Remote Management OFF** (otherwise it occupies or conflicts with 443). Turn **UPnP OFF**. Change the admin password from the default.
-2. Port forward **TCP 443 → Mac:443** and **UDP N → Mac:N**, nothing else. Give the Mac a DHCP reservation.
+1. Archer VR400: turn **Remote Management OFF** (otherwise it occupies or conflicts with 443). UPnP: **on** if the Mac should open its own two forwards (the default since ADR-0005 amendment 2; any device at home can then open ports without a password), **off** if you forward by hand. Change the admin password from the default.
+   - If you save the router password in the Mac app (to read the public address, ADR-0005), it sits in the Mac's Keychain (`dev.clamshell.host`, account `router-password`, this device only) and is only sent to the router, on the LAN, inside the router page's own encryption. Someone with your unlocked Mac session can read it, as they could from a browser's saved passwords. The DuckDNS token (`dns-token`) is kept the same way; with it, someone could point your name elsewhere, which only leads to a failed handshake.
+2. Only **TCP 443 → Mac:443** and **UDP N → Mac:N** are forwarded, nothing else: by the Mac over UPnP (one-hour leases named "Clamshell", closed while remote access is paused), or by hand with a DHCP reservation for the Mac.
 3. Router firmware: latest from TP-Link.
 4. On the Mac: FileVault on. The macOS firewall can stay on; signed apps get their incoming rule.
 

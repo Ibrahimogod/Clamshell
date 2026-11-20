@@ -27,7 +27,8 @@ targets:
           destination: plugins
       - package: ClamshellKit
         products: [ClamshellWire, ClamshellSession, ClamshellTransport, ClamshellStream, ClamshellVideo,
-                   ClamshellRateControl, ClamshellVirtualDisplay, ClamshellKeychain, ClamshellBench, ClamshellInput, ClamshellFiles]
+                   ClamshellRateControl, ClamshellVirtualDisplay, ClamshellKeychain, ClamshellBench, ClamshellInput, ClamshellFiles,
+                   ClamshellHome]
     info:
       path: Generated/Info.plist
       properties:

@@ -88,7 +88,7 @@ struct ConnectView: View {
                 }
             }
             Section {
-                TextField("203.0.113.7:51820", text: $client.manualAddress)
+                TextField("myhome.duckdns.org or 203.0.113.7:51820", text: $client.manualAddress)
                     .font(.footnote.monospaced())
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
@@ -102,7 +102,7 @@ struct ConnectView: View {
             } header: {
                 Text(client.macs.count > 1 ? "Away from home: \(client.pairedMac?.name ?? "Mac")" : "Away from home")
             } footer: {
-                Text("Over cellular or another Wi-Fi the Mac can't be found automatically. Enter your home address and the UDP port forwarded to the Mac. The app also tries TLS on the TCP port (443) for networks that block UDP, and uses whichever answers first (docs/SETUP.md › Away from home).")
+                Text("Over cellular or another Wi-Fi the phone dials the address the Mac gave it at home (its DuckDNS name, if you set one up), so this fills itself after one session at home. You only type here without that: your home address or name; the port can be left out (UDP 51820). The app also tries TLS on the TCP port (443) for networks that block UDP, and uses whichever answers first (docs/SETUP.md › Away from home).")
             }
             if client.isPaired {
                 Section {

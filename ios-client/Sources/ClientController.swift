@@ -118,7 +118,7 @@ final class ClientController {
             updateSelected { $0.address = manualAddress }
         }
     }
-    var manualAddressValid: Bool { Self.parse(manualAddress) != nil }
+    var manualAddressValid: Bool { Self.parse(manualAddress, defaultPort: awayUDPPort) != nil }
     /// The Mac's TCP fallback port (TLS + WebSocket, path P3); 0 turns the fallback off.
     var tcpPort = UserDefaults.standard.object(forKey: "tcpPort") as? Int ?? 443 {
         didSet {
@@ -263,7 +263,7 @@ final class ClientController {
         let named = hosts.first { !invite.macName.isEmpty && $0.name == invite.macName } ?? hosts.first { h in !macs.contains { $0.name == h.name } } ?? hosts.first
         if targets.isEmpty, let found = named, case .hostPort(let h, let p) = found.endpoint { targets.append(("\(h)", p.rawValue)) }
         let bonjour = targets.isEmpty ? named?.endpoint : nil
-        if targets.isEmpty, bonjour == nil, let (h, p) = Self.parse(manualAddress) { targets.append((h, p)) }
+        if targets.isEmpty, bonjour == nil, let (h, p) = Self.parse(manualAddress, defaultPort: awayUDPPort) { targets.append((h, p)) }
         guard !targets.isEmpty || bonjour != nil else {
             pairingStatus = .failed("No Mac found on this Wi-Fi. Pair at home, on the same network as the Mac.")
             return
@@ -311,7 +311,8 @@ final class ClientController {
     func cancelPairingMessage() { pairingStatus = .idle }
 
     /// The Mac's away-from-home address (ADR-0005), newest `seq` wins. Fills the address field when it's
-    /// empty or still holds the previous learned value; a hand-typed address is left alone.
+    /// empty or still holds the previous learned value. A hand-typed name is left alone; a hand-typed number
+    /// gives way to a name from the Mac (its DuckDNS name), which keeps working after the address changes.
     private func learn(_ e: HomeEndpoint) {
         guard let i = macs.firstIndex(where: { $0.publicKey == connectedMacKey }) else { return }
         var mac = macs[i]
@@ -319,7 +320,11 @@ final class ClientController {
         let h = e.host.contains(":") ? "[\(e.host)]" : e.host
         let old = mac.publicHost.isEmpty ? nil : (mac.publicHost.contains(":") ? "[\(mac.publicHost)]" : mac.publicHost) + ":\(mac.udpPort)"
         let current = mac.address ?? ""
-        if current.isEmpty || current == old { mac.address = "\(h):\(e.udpPort)" }
+        let typedNumber = Self.parse(current).map { Self.isAddressLiteral($0.host) } ?? false
+        if current.isEmpty || current == old || (typedNumber && !Self.isAddressLiteral(e.host)) {
+            if !current.isEmpty, current != old { print("# home endpoint: \(e.host) replaces the typed \(current)") }
+            mac.address = "\(h):\(e.udpPort)"
+        }
         mac.publicHost = e.host
         mac.udpPort = e.udpPort
         if e.tcpPort > 0 { mac.tcpPort = e.tcpPort }
@@ -348,7 +353,7 @@ final class ClientController {
         var plan: [(String, String, @Sendable () -> any PacketPath)] = []
         if let lan = lanHost(for: mac)?.endpoint { plan.append(("Same Wi-Fi (LAN)", "Bonjour", { UDPClient(endpoint: lan, name: "lan") })) }
         else { plan.append(("Same Wi-Fi (LAN)", "Mac not visible on this network", { DeadPath() })) }
-        if let (h, p) = Self.parse(manualAddress) {
+        if let (h, p) = Self.parse(manualAddress, defaultPort: awayUDPPort) {
             plan.append(("Home, UDP \(p)", h, { UDPClient(host: h, port: p, name: "udp") }))
             if let tp = UInt16(exactly: tcpPort), tp > 0 {
                 plan.append(("Home, TCP \(tp) (TLS)", h, { WSSClient(host: h, port: tp, name: "tcp") }))
@@ -396,7 +401,7 @@ final class ClientController {
     }
 
     /// Whether Connect can reach `mac` now: on this Wi-Fi, or at a usable away-from-home address.
-    func canConnect(_ mac: PairedMac) -> Bool { lanHost(for: mac) != nil || Self.parse(awayAddress(of: mac)) != nil }
+    func canConnect(_ mac: PairedMac) -> Bool { lanHost(for: mac) != nil || Self.parse(awayAddress(of: mac), defaultPort: mac.udpPort) != nil }
 
     private func applySelection(_ mac: PairedMac) {
         selectedMacKey = mac.publicKey
@@ -516,26 +521,41 @@ final class ClientController {
         udp.add(.init(rank: 0, delay: .zero) { UDPClient(endpoint: ep, name: "lan") })
     }
 
-    /// Splits `host:port`, `[v6]:port`. Nil if malformed.
-    static func parse(_ text: String) -> (host: String, port: UInt16)? {
+    /// An IPv4 or IPv6 address rather than a DNS name.
+    static func isAddressLiteral(_ host: String) -> Bool {
+        host.contains(":") || (host.split(separator: ".", omittingEmptySubsequences: false).count == 4
+            && host.allSatisfy { $0.isASCII && ($0.isNumber || $0 == ".") })
+    }
+
+    /// Splits `host:port`, `[v6]:port`, or a bare host or `[v6]`, which gets `defaultPort` (the Mac's UDP
+    /// port). Nil if malformed.
+    static func parse(_ text: String, defaultPort: UInt16 = 51820) -> (host: String, port: UInt16)? {
         let t = text.trimmingCharacters(in: .whitespaces)
-        let host: Substring, port: Substring
+        let host: Substring, port: Substring?
         if t.hasPrefix("["), let close = t.firstIndex(of: "]") {
             host = t[t.index(after: t.startIndex)..<close]
             let rest = t[t.index(after: close)...]
-            guard rest.hasPrefix(":") else { return nil }
-            port = rest.dropFirst()
-        } else {
-            guard let colon = t.lastIndex(of: ":"), t.firstIndex(of: ":") == colon else { return nil }
+            guard rest.isEmpty || rest.hasPrefix(":") else { return nil }
+            port = rest.isEmpty ? nil : rest.dropFirst()
+        } else if let colon = t.lastIndex(of: ":") {
+            guard t.firstIndex(of: ":") == colon else { return nil }
             host = t[..<colon]
             port = t[t.index(after: colon)...]
+        } else {
+            host = Substring(t)
+            port = nil
         }
-        guard !host.isEmpty, let p = UInt16(port), p > 0 else { return nil }
+        guard !host.isEmpty, !host.contains(where: \.isWhitespace) else { return nil }
+        guard let port else { return defaultPort > 0 ? (String(host), defaultPort) : nil }
+        guard let p = UInt16(port), p > 0 else { return nil }
         return (String(host), p)
     }
 
+    /// The UDP port for an away address typed without one: the selected Mac's.
+    var awayUDPPort: UInt16 { pairedMac.map(\.udpPort).flatMap { $0 > 0 ? $0 : nil } ?? 51820 }
+
     func connectManual() {
-        guard let (h, p) = Self.parse(manualAddress) else { return }
+        guard let (h, p) = Self.parse(manualAddress, defaultPort: awayUDPPort) else { return }
         connect(to: BonjourBrowser.Found(name: manualAddress, endpoint: .hostPort(host: .init(h), port: .init(rawValue: p) ?? .any)))
     }
 
@@ -664,7 +684,7 @@ final class ClientController {
             if let ep = lan?.endpoint {
                 candidates.append(.init(rank: 0, delay: .zero) { UDPClient(endpoint: ep, name: "lan") })
             }
-            if let (h, p) = Self.parse(manualAddress) {
+            if let (h, p) = Self.parse(manualAddress, defaultPort: awayUDPPort) {
                 let start: Duration = lan == nil ? .zero : .milliseconds(150)
                 candidates.append(.init(rank: 1, delay: start) { UDPClient(host: h, port: p, name: "udp") })
                 if let tp = UInt16(exactly: tcpPort), tp > 0 {
