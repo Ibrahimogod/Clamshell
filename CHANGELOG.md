@@ -2,7 +2,7 @@
 
 All notable changes per milestone. Dates are 2026.
 
-## Unreleased: The Mac notices a new home address, and phones follow it
+## 1.3.0: The Mac notices a new home address, phones follow it, and prebuilt downloads (2026-11-21)
 
 - **Prebuilt downloads, without a paid Apple Developer membership.** Pushing a `v*` tag runs
   `.github/workflows/release.yml` on GitHub's free macOS runners (the Xcode 27 image) and attaches to the
