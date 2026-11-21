@@ -4,6 +4,15 @@ All notable changes per milestone. Dates are 2026.
 
 ## Unreleased: The Mac notices a new home address, and phones follow it
 
+- **Prebuilt downloads, without a paid Apple Developer membership.** Pushing a `v*` tag runs
+  `.github/workflows/release.yml` on GitHub's free macOS runners (the Xcode 27 image) and attaches to the
+  GitHub Release an unsigned `Clamshell.ipa` (the app and its widget; AltStore or SideStore signs it with the
+  user's own Apple Account), an ad-hoc-signed, un-notarized, universal `ClamshellHost.zip`, and
+  `SHA256SUMS.txt`. The build is `tools/scripts/package.sh`, which runs the same on any Mac and needs no
+  Apple account. SETUP has a new **Install without building** section (AltStore/SideStore's 7-day refresh,
+  3-app and 10-App-ID limits; Open Anyway on the Mac, and granting Screen Recording and Accessibility again
+  after each update). Building it yourself stays the main path.
+
 - **The Mac reads the home's public address from the router over UPnP**, once a minute, the same way it
   opens the ports: no router password, no signing in to the router page. (An earlier build of this release
   signed in to the TP-Link VR400's web page with the admin password; that's gone, and the saved password is

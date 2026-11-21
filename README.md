@@ -37,8 +37,13 @@ and everything between the phone and the Mac is end-to-end encrypted (Noise IKps
 | Build tools | Xcode 27.1 or later (tested with 27.2), [Homebrew](https://brew.sh) and `xcodegen` |
 | Apple account | A free Apple Account is enough to build for your own devices (the phone app then needs a rebuild every 7 days). A paid Developer Program membership makes it a year. |
 
-There are no prebuilt downloads: you build both apps yourself, signed with your own Apple account. It takes
-one script.
+The main way in is to build both apps yourself, signed with your own Apple account. It takes one script.
+
+**Don't want to build?** Each [release](https://github.com/Ibrahimogod/Clamshell/releases) also has an
+unsigned `Clamshell.ipa` to install with AltStore or SideStore (signed with your own free Apple Account,
+refreshed every 7 days) and an ad-hoc-signed, un-notarized `ClamshellHost.zip` for the Mac. No paid Apple
+membership is involved, so there are trade-offs: see
+[Install without building](docs/SETUP.md#install-without-building).
 
 ## Quick start
 

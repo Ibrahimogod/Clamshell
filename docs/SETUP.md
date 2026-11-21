@@ -9,6 +9,65 @@ For everyday use once it's running, see [USAGE.md](USAGE.md). To work on the cod
 
 **Tested with:** MacBook Pro M5 on macOS 27.2, Xcode 27.2 (Swift 6.4), iPhone Duo on iOS 27.
 
+Don't want to build? [Install without building](#install-without-building) uses the prebuilt downloads
+instead. Building it yourself (§0–§3) is still the better setup.
+
+## Install without building
+
+Every [release](https://github.com/Ibrahimogod/Clamshell/releases) has prebuilt apps, built by GitHub
+Actions from the tagged source (`.github/workflows/release.yml`, `tools/scripts/package.sh`):
+
+| File | What |
+|---|---|
+| `Clamshell.ipa` | The iPhone app, **unsigned**. AltStore or SideStore signs it with your own Apple Account when installing. |
+| `ClamshellHost.zip` | The Mac host, **ad-hoc signed and not notarized**. |
+| `SHA256SUMS.txt` | Checksums: `shasum -a 256 -c SHA256SUMS.txt` in the download folder. |
+
+Nobody pays Apple for this project, and that has costs: macOS warns before the first launch, the phone app has
+to be re-signed every 7 days, and the Mac asks for its permissions again after every update. Building it
+yourself with your own Apple Account (§0–§3) avoids the last one. Use the same version on both sides.
+
+### iPhone: AltStore or SideStore
+
+1. Install [AltStore](https://altstore.io) (Classic, with AltServer on a Mac or PC) or
+   [SideStore](https://sidestore.io), following their guide, and sign it in with your Apple Account. A free
+   account is enough. Turn on Settings › Privacy & Security › **Developer Mode** on the phone if it asks.
+2. On the phone, download `Clamshell.ipa` from the release page in Safari.
+3. In AltStore or SideStore: **My Apps › +**, pick `Clamshell.ipa` from Downloads. It signs the app with your
+   account and installs it. Then continue at [§5](#5-first-run-on-the-phone), step 2.
+
+With a **free** Apple Account:
+- **The app stops opening after 7 days** unless it's refreshed. AltStore or SideStore does that (**Refresh
+  All**, or in the background): AltStore Classic needs AltServer running on a computer on the same Wi-Fi,
+  SideStore refreshes on the phone itself. Clamshell's own expiry warnings (§7) still work.
+- **3 sideloaded apps at once**, and AltStore or SideStore is one of them.
+- **10 App IDs per 7 days.** Clamshell uses two: the app and its widget extension (the widget and the
+  Control Center control). If you're out of App IDs, AltStore offers to install without the extension:
+  Clamshell works the same, without the widget.
+
+A paid Developer Program account lifts the 7-day and 3-app limits.
+
+### Mac
+
+1. Download `ClamshellHost.zip`, double-click it, and drag **ClamshellHost** into /Applications.
+2. Open it. macOS says it can't check the app for malicious software (it isn't notarized): click **Done**.
+   Then open System Settings › Privacy & Security, scroll down to "ClamshellHost was blocked…" and click
+   **Open Anyway**, then confirm with your password. You do this once per download.
+3. Continue at [§4](#4-first-run-on-the-mac).
+
+The download's bundle ID prefix is `dev.clamshell.local`: where these docs say `<your prefix>.host`, use
+`dev.clamshell.local.host`, for example
+`defaults write dev.clamshell.local.host udpPort -int 443` (§6).
+
+**After every update** (quit the host, replace the app in /Applications, Open Anyway again): an ad-hoc
+signature has no team behind it, so every build is a new app to macOS. In System Settings › Privacy &
+Security, remove ClamshellHost with − from **Screen & System Audio Recording** and **Accessibility** (Device
+Control on macOS 27), then grant both again from the host's menu (§4). The Keychain may also ask once
+whether ClamshellHost may use its saved keys (its identity and pairings): click **Always Allow**.
+
+The microphone driver (§4, step 7) installs from the app in /Applications with
+`tools/scripts/install-microphone.sh`, which is in the source: clone the repository to run it, no build needed.
+
 ## 0. What you need
 
 - A Mac on **macOS 26 or later**, and an iPhone on **iOS 26 or later**. An iPhone Duo gets the fold-aware
@@ -180,7 +239,9 @@ always preferred. The host log's `streaming to` line shows `· internet · udp` 
 
 ## 7. Updating, and the 7-day limit
 
-To update, pull the new code and run the same script; pairings and settings are kept:
+Installed the prebuilt downloads? Get the new release and follow
+[After every update](#mac) on the Mac; AltStore or SideStore updates the phone app from the new `.ipa`.
+Built it yourself? Pull the new code and run the same script; pairings and settings are kept:
 
 ```bash
 git pull && tools/scripts/release.sh
