@@ -140,7 +140,8 @@ through networks that only allow web traffic), and uses whichever answers first.
    otherwise want port 443).
    - **Automatically (UPnP, the default):** turn UPnP on in the router (TP-Link Archer: Advanced › NAT
      Forwarding › UPnP). The Mac asks the router for UDP 443 and TCP 443 itself, renews that every 30
-     minutes, and follows its own address when that changes. The **Port forwarding** line in **Home
+     minutes, follows its own address when that changes, and checks once a minute that the router still
+     has them (a router restart wipes them). The **Port forwarding** line in **Home
      address…** says what's open. Delete any forwards for these ports you made by hand earlier (Virtual
      Servers): on the Archer they win over the Mac's and stay on the old address. The catch: with UPnP on, any device on your network can open ports
      without a password (ADR-0005, amendment 2).
@@ -217,6 +218,9 @@ give the Mac app to other people (see [app-store.md](app-store.md)).
 | Keys and trackpad do nothing, phone shows a banner | §4 step 3. Also, using the Mac's own keyboard or trackpad pauses the phone for 3 s. |
 | "This phone's key could not be read from the Keychain" | The app was built without your team: check `mac-host/Config/Local.xcconfig`. |
 | Away from home doesn't connect | Port forwards (§6), the address in **Away from home**, and **Check connection** on the phone. CGNAT (a 100.64–100.127 address) can't work. |
+| Away from home stopped right after a router restart | Wait about two minutes: the router has to come back online, the Mac reopens its forwards within a minute, and DuckDNS points at the new address (60 s TTL). **Home address…** shows each step. |
+| Only UDP or only TCP works away from home | Fine: the phone uses whichever answers. If UDP never answers, check the port is 443 (§6 step 1); some mobile networks drop other UDP ports. |
+| At home the phone goes through the public address (host log: `streaming to … udp <your public address>`, not a 192.168… or fe80… one) | Bonjour isn't crossing your Wi-Fi: turn off client/AP isolation and keep both on the main network, not a guest one. A router restart sometimes fixes it. |
 | Text soft while scrolling, sharp a moment later | Expected: the refinement pass sharpens the picture once it's still. |
 | "Maximum App ID limit reached" (free account) | 10 new App IDs per 7 days: wait, or keep the prefix you already used. |
 | Clamshell Microphone missing from Sound › Input | Run `tools/scripts/install-microphone.sh` (§4 step 6); if still missing, log out and back in. |

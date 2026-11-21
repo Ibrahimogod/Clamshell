@@ -25,6 +25,9 @@ All notable changes per milestone. Dates are 2026.
   own address on the home network changes (a new private Wi-Fi address, say). Paused remote access closes
   them. Needs UPnP on in the router; switch it off in **Home address…** to keep forwarding by hand. This
   reverses "keep UPnP off" (ADR-0005, amendment 2): any device at home can then open ports.
+- **Fix: a router restart left the ports closed for up to 30 minutes.** The router wipes its forwards when it
+  restarts, including ones the Mac made while it was still coming online, and the Mac only renewed every 30
+  minutes. It now checks once a minute that its forwards are still there and opens them again if not.
 - **A notification when the address changes**, also for a change while the host wasn't running.
 - **A DuckDNS name for the phone.** With a free name from duckdns.org and its token saved in the same
   window, the Mac points the name at every new address (60 s TTL) and gives phones the name instead of the

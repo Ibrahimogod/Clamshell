@@ -6,8 +6,8 @@ import Observation
 /// forwarding by hand, and the forward follows the Mac when its address on the home network changes.
 ///
 /// Each mapping is asked for with a one-hour lease and renewed every 30 minutes, and again at once when the
-/// Mac's own address changes, so a forward never outlives the Mac by more than an hour. Mappings are named
-/// "Clamshell"; a Clamshell mapping that points at an old address of this Mac is replaced, a mapping
+/// Mac's own address changes or the router has lost it (checked every minute: a restart wipes them), so a
+/// forward never outlives the Mac by more than an hour. Mappings are named "Clamshell"; a Clamshell mapping that points at an old address of this Mac is replaced, a mapping
 /// someone else made on the same port is left alone and reported.
 ///
 /// Off (UserDefaults `upnpPortMapping` = false) it removes its own mappings and does nothing else.
@@ -78,7 +78,12 @@ final class PortForwarder {
             status = "Waiting for the network…"
             return
         }
-        if me == local, Date() < nextRenewal { return }
+        if me == local, Date() < nextRenewal {
+            // A router that restarted, or whose internet connection came back, forgets its forwards (the
+            // VR400 even drops ones made while it was still coming up): look for them once a minute.
+            guard await forwardsLost(at: gw, me: me) else { return }
+            print("port forwarding: the router lost the forwards (restarted?); opening them again")
+        }
         if me != local, let old = local { print("port forwarding: this Mac moved from \(old) to \(me) on the home network") }
         local = me
 
@@ -136,6 +141,22 @@ final class PortForwarder {
         } catch let e as UPnPError where e.code == UPnPError.notAuthorized {
             throw UPnPError(code: e.code, text: "the router doesn't let devices open ports (UPnP is read-only there)")
         }
+    }
+
+    /// True when a forward this Mac made is gone from the router or points elsewhere.
+    private func forwardsLost(at host: String, me: String) async -> Bool {
+        guard let g = await gateway(at: host) else { return false }
+        for (proto, m) in open {
+            do {
+                guard let now = try await g.mapping(m.port, proto), now.internalClient == me else { return true }
+            } catch let e as UPnPError where e.code < 0 {
+                gateway = nil   // not answering (restarting): look it up again next minute
+                return false
+            } catch {
+                return false
+            }
+        }
+        return false
     }
 
     /// Removes the forwards this Mac made (on pause, or when switched off).

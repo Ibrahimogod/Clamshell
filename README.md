@@ -21,8 +21,10 @@ and everything between the phone and the Mac is end-to-end encrypted (Noise IKps
   trackpad sizes.
 - **Extras.** Mac sound on the phone, clipboard both ways, sending files to the Mac's Downloads, a stats HUD,
   keep-awake and open-at-login on the Mac.
-- **Away from home.** UDP and a TLS-on-443 fallback raced in parallel, through a port forward on your own
-  router. Pairing only ever happens on your home network.
+- **Away from home.** UDP and a TLS-on-443 fallback raced in parallel, through your own router: the Mac
+  opens the port forwards itself (UPnP) and keeps a free DuckDNS name pointed at your home, so the phone
+  finds it again after the address changes or the router restarts. Pairing only ever happens on your home
+  network.
 - **Safe at the Mac.** Using the Mac's own keyboard or trackpad pauses the phone, pressing Esc three times
   ends every session, and phones can be revoked from the menu.
 
@@ -52,6 +54,46 @@ connect it with a cable once. Then grant the Mac host Screen Recording and Acces
 the host's menu, and connect. **[docs/SETUP.md](docs/SETUP.md)** walks through every step from a fresh Mac,
 including reaching the Mac away from home.
 
+## Recommended setup
+
+Once the apps are installed, this is the setup that works best day to day. Each step is explained in
+[docs/SETUP.md](docs/SETUP.md) (§ numbers below).
+
+**On the Mac** (the host's menu-bar menu):
+- Grant **Screen Recording** and **Accessibility** (Device Control on macOS 27), then quit and reopen the
+  host (§4).
+- Turn on **Open at login**, **Keep this Mac awake while plugged in**, and allow notifications (§4).
+- Fix the UDP port at **443**, then quit and reopen the host (§6). Mobile networks pass 443; some drop
+  other ports, such as WireGuard's 51820:
+  ```bash
+  defaults write <your prefix>.host udpPort -int 443
+  ```
+
+**On the router** (§6):
+- Turn **UPnP on**. The Mac then opens UDP 443 and TCP 443 itself, and opens them again within a minute
+  of a router restart.
+- Keep the router's own **remote management off**, and delete any port forwards for 443 you made by
+  hand (they win over the Mac's).
+- Put the phone and the Mac on the same Wi-Fi, not a guest network, with no client (AP) isolation, so they
+  find each other at home.
+- If the router's public address is in 100.64–100.127, your ISP uses carrier-grade NAT and away from home
+  can't work.
+
+**For away from home** (§6):
+- Make a free [DuckDNS](https://www.duckdns.org) name and save it with its token in **Home address…** on
+  the Mac. Phones then dial the name, which the Mac keeps pointed at your current address.
+- After pairing, or after changing the Mac's port, connect once at home so the phone learns the name and
+  the port.
+- On the phone, **Check connection** tests the home Wi-Fi, UDP and TCP paths one by one.
+- After a router restart, give it about two minutes (the router coming back online, the Mac reopening the
+  forwards, DuckDNS pointing at the new address), then connect.
+
+**On the phone:**
+- Allow **Local Network** (the app finds the Mac with Bonjour) (§5).
+- With a free Apple Account, run `tools/scripts/release.sh` again before the 7-day profile runs out (§7).
+- Optional: **Touch ID before connecting**, and the Mac's **Hide this Mac's screen during a
+  session** (on by default away from home) ([USAGE.md](docs/USAGE.md)).
+
 ## Documentation
 
 | | |
@@ -80,7 +122,8 @@ The Xcode projects are generated from each app's `project.yml` (`xcodegen genera
 ## Privacy
 
 Nothing leaves your devices except the encrypted stream between your phone and your Mac. The apps collect no
-data, contain no analytics and talk to no server of ours. See [docs/security.md](docs/security.md) and
+data, contain no analytics and talk to no server of ours. If you set up a DuckDNS name, the Mac tells DuckDNS
+your home's public address, and nothing else. See [docs/security.md](docs/security.md) and
 [docs/app-store.md](docs/app-store.md).
 
 ## License
