@@ -102,7 +102,7 @@ struct PairingView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Away-from-home address (optional)").font(.callout)
                     TextField("your router's public IP or DNS name", text: $publicHost).textFieldStyle(.roundedBorder)
-                    Text("Given to the phone when it pairs, for use on mobile data or other Wi-Fi. Needs TCP 443 and UDP 51820 forwarded to this Mac (docs/SETUP.md).")
+                    Text("Given to the phone when it pairs, for use on mobile data or other Wi-Fi. Needs TCP 443 and UDP 443 forwarded to this Mac (docs/SETUP.md).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Cancel") { cancel() }.keyboardShortcut(.cancelAction)

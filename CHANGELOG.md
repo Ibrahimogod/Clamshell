@@ -2,6 +2,48 @@
 
 All notable changes per milestone. Dates are 2026.
 
+## Unreleased: The Mac notices a new home address, and phones follow it
+
+- **The Mac reads the home's public address from the router over UPnP**, once a minute, the same way it
+  opens the ports: no router password, no signing in to the router page. (An earlier build of this release
+  signed in to the TP-Link VR400's web page with the admin password; that's gone, and the saved password is
+  deleted from the Keychain at the next launch.)
+- **Fix: the phone couldn't connect away from home when the network was slow.** It sends a new handshake
+  every 500 ms while connecting and only accepted an answer to the newest one, so when an answer took longer
+  than half a second (mobile data, a router that just restarted) every answer was thrown away and the
+  connection timed out. It now accepts an answer to any of its recent handshakes. New test with a 1.2 s path.
+- **UDP 443 instead of 51820.** 51820 is WireGuard's port and the owner's mobile network dropped the Mac's
+  answers on it; 443 (HTTP/3's) gets through. SETUP §6 now fixes the Mac's port at 443, and the phone
+  defaults to 443 and also tries it when its saved port is another, so a Mac moved to 443 isn't lost.
+- **Fix: the TCP 443 path (TLS + WebSocket) never worked on the phone.** App Transport Security refused the
+  Mac's self-signed certificate even though the app accepts it (`-1200`), so a network that blocks UDP had
+  no way through. duckdns.org and dedyn.io names are now exempt from ATS (nothing else is); a typed IP
+  address or another domain still gets UDP only. The phone logs why that path fails.
+- `--network-check` at launch runs **Check connection** on a paired phone (for checks over `devicectl`).
+- **The Mac opens its own port forwards (UPnP).** No more Virtual Servers by hand: the Mac asks the router
+  for UDP 443 and TCP 443 with a one-hour lease, renews every 30 minutes, and moves them at once when its
+  own address on the home network changes (a new private Wi-Fi address, say). Paused remote access closes
+  them. Needs UPnP on in the router; switch it off in **Home address…** to keep forwarding by hand. This
+  reverses "keep UPnP off" (ADR-0005, amendment 2): any device at home can then open ports.
+- **Fix: a router restart left the ports closed for up to 30 minutes.** The router wipes its forwards when it
+  restarts, including ones the Mac made while it was still coming online, and the Mac only renewed every 30
+  minutes. It now checks once a minute that its forwards are still there and opens them again if not.
+- **A notification when the address changes**, also for a change while the host wasn't running.
+- **A DuckDNS name for the phone.** With a free name from duckdns.org and its token saved in the same
+  window, the Mac points the name at every new address (60 s TTL) and gives phones the name instead of the
+  address. After a change the phone finds the Mac again on mobile data with nothing to type. Phones get the
+  name at their next session. A typed address gives way to the name (the phone used to keep a typed
+  number forever, so it kept dialing the old address); a typed name stays. The port can be left out of a typed
+  address (`myhome.duckdns.org` dials UDP 443, or the Mac's own port). A domain of your own hosted at deSEC works too
+  (deSEC's free dedyn.io names are closed to new accounts).
+- The DuckDNS token is in the Keychain (`dns-token`), never in files or logs.
+- New shared library `ClamshellHome`: the UPnP client (SSDP search, IGD description, SOAP: port mappings and
+  the public address) and the DuckDNS/deSEC client, with 8 tests.
+- Telling home sessions from away ones compares against the address even when phones dial the name.
+- Docs: ADR-0005 accepted and amended three times (DuckDNS flagged as a third party you chose, UPnP port
+  forwards by your decision, the address read over UPnP instead of the router page), SETUP §6,
+  USAGE, security.md §7.
+
 ## 1.2.0: Privacy screen, unlock from the phone, big files and folders (2026-11-20)
 
 Protocol 1.9, additive: 1.0–1.1 phones and Macs still work together, without the new features. The ideas for

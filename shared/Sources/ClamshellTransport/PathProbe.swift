@@ -40,13 +40,15 @@ public enum PathProbe {
             path.stop()
         }
         defer { resend.cancel(); stopper.cancel() }
+        var heard = 0
         for await d in path.datagrams {
+            heard += 1
             guard d.first == OuterPacketType.handshakeResponse.rawValue else { continue }
             if (try? hs.complete(response: d, now: .now)) != nil {
                 let c = (ContinuousClock.now - started).components
                 return .reachable(rttMs: Double(c.seconds) * 1000 + Double(c.attoseconds) / 1e15)
             }
         }
-        return .noAnswer
+        return heard == 0 ? .noAnswer : .failed("\(heard) packets came back, none a valid answer")
     }
 }

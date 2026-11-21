@@ -38,13 +38,23 @@ final class HostController {
     private var deviceStore = DeviceStore(keychain: nil)
     private let pairingWindow = PairingWindowController()
     private var pairingTimer: Task<Void, Never>?
-    /// The router's public address (NAT-PMP) or the one typed in the pairing window (ADR-0005).
+    /// The router's public address and the name phones dial (ADR-0005, Home address… window).
     let publicAddress = PublicAddressMonitor(
-        directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Clamshell"))
+        directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Clamshell"),
+        keychain: ProcessInfo.processInfo.environment["CLAMSHELL_EPHEMERAL_KEYS"] == "1" ? nil : KeychainStore(service: "dev.clamshell.host"))
+    /// Opens UDP and TCP on the router over UPnP and keeps them pointed at this Mac.
+    let portForwarder = PortForwarder()
+    private let homeWindow = HomeAddressWindowController()
     var publicAddressText: String {
-        guard let a = publicAddress.effective else { return "Public address: unknown (type it in the pairing window)" }
+        guard let a = publicAddress.effective else { return "Public address: unknown (set it up under Home address…)" }
         let n = publicAddress.changesLast30Days
-        return "Public address: \(a)" + (publicAddress.learned == a ? " (router)" : "") + (n > 0 ? " · changed \(n)× in 30 days" : "")
+        let ip = publicAddress.ip.map { $0 == a ? "" : " (\($0))" } ?? ""
+        return "Public address: \(a)\(ip)" + (publicAddress.learned != nil ? " · from the router" : "")
+            + (n > 0 ? " · changed \(n)× in 30 days" : "")
+    }
+
+    func showHomeAddress() {
+        homeWindow.show(HomeAddressView(monitor: publicAddress, forwarder: portForwarder))
     }
     private(set) var stats = HostVideoPipeline.Stats()
     private(set) var streamDescription = ""
@@ -208,11 +218,11 @@ final class HostController {
             print("mac screen: \(state)")
             Task { await self.sendHostState() }
         }
-        publicAddress.onChange = { [weak self] ip in
-            print("public address: \(ip)")
+        publicAddress.onChange = { [weak self] _ in
             Task { await self?.sendHomeEndpoint() }
         }
-        publicAddress.start()
+        portForwarder.start()
+        publicAddress.start { [portForwarder] in await portForwarder.publicAddress() }
         layoutObserver = KeyboardLayouts.observe { [weak self] in self?.sendKeyboardLayout() }
         let service = SendToPhoneService { [weak self] urls in self?.sendFilesToPhone(urls) ?? "" }
         self.service = service
@@ -242,7 +252,7 @@ final class HostController {
         guard let s = session, let server, peerMinor >= 3, let host = publicAddress.effective else { return }
         let tcp = UInt16(UserDefaults.standard.integer(forKey: "tcpPort")).nonZero ?? 443
         let now = UInt64(Date().timeIntervalSince1970)
-        let msg = HomeEndpoint(host: host, udpPort: await server.boundPort ?? 51820, tcpPort: edge == nil ? 0 : tcp, observedAt: now, seq: now)
+        let msg = HomeEndpoint(host: host, udpPort: await server.boundPort ?? 443, tcpPort: edge == nil ? 0 : tcp, observedAt: now, seq: now)
         await server.send([msg.message], to: s.peerKey)
     }
 
@@ -274,7 +284,7 @@ final class HostController {
             return
         }
         if !skipAuth { guard await PairingSupport.authorize() else { return } }
-        let port = await server.boundPort ?? 51820
+        let port = await server.boundPort ?? 443
         let invite = PairingInvite(macPublicKey: await server.publicKey, secret: PairingInvite.newSecret(),
                                    macName: Host.current().localizedName ?? "Mac", port: port, addresses: PairingSupport.lanAddresses())
         await server.openPairing(invite)
@@ -311,7 +321,7 @@ final class HostController {
         let tcp = UInt16(UserDefaults.standard.integer(forKey: "tcpPort")).nonZero ?? 443
         let publicHost = publicAddress.effective ?? ""
         do {
-            let peer = try await server.confirmPairing(id, accept: PairingAccept(accepted: true, udpPort: await server.boundPort ?? 51820,
+            let peer = try await server.confirmPairing(id, accept: PairingAccept(accepted: true, udpPort: await server.boundPort ?? 443,
                                                                                   tcpPort: tcp, publicHost: publicHost))
             try deviceStore.add(peer)
             devices = deviceStore.devices
@@ -352,6 +362,7 @@ final class HostController {
         guard let server else { return }
         paused = on
         await server.setPaused(on)
+        portForwarder.setPaused(on)
         if on {
             edge?.stop()
             edge = nil
@@ -385,6 +396,7 @@ final class HostController {
             status = .waiting(port: port)
             log.notice("listening on UDP \(port)")
             print("CLAMSHELL_UDP_PORT=\(port)")
+            portForwarder.set(.udp, port)
             await startEdge(server)
             #if DEBUG
             // Automation: open a pairing window at launch (no owner check) and print the invite.
@@ -409,12 +421,14 @@ final class HostController {
             edge = w
             edgeText = "Internet fallback: TCP \(bound) (TLS + WebSocket)"
             print("CLAMSHELL_TCP_PORT=\(bound)")
+            portForwarder.set(.tcp, bound)
             print("accessibility trusted: \(AXIsProcessTrusted()) · post events: \(CGPreflightPostEventAccess()) · bundle \(Bundle.main.bundlePath)")
             print("input permission: \(InputInjector.allowed ? "allowed" : "NOT allowed") · screen recording: \(CGPreflightScreenCaptureAccess() ? "allowed" : "NOT allowed")")
         } catch {
             edgeText = "TCP \(port) unavailable: \(error)"
             log.error("edge failed on TCP \(port): \(String(describing: error))")
             print("CLAMSHELL_TCP_PORT=failed \(error)")
+            portForwarder.set(.tcp, nil)
         }
     }
 
@@ -851,7 +865,7 @@ final class HostController {
     /// arrives from that address (the router loops it back), so it counts as home.
     private func isRemote(_ key: [UInt8], server: HostSessionServer) async -> Bool {
         if await server.isLocalPath(of: key) ?? true { return false }
-        guard let home = publicAddress.effective, !home.isEmpty else { return true }
+        guard let home = publicAddress.ip, !home.isEmpty else { return true }
         return await server.sourceHost(of: key) != home
     }
 

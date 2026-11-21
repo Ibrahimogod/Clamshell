@@ -29,6 +29,8 @@ public final class PathRacer: PacketPath {
         var up = false
         var lastInbound: ContinuousClock.Instant?
         var lastRetry: ContinuousClock.Instant?
+        /// Packets heard on this path, for the report after a failed connect.
+        var heard = 0
     }
 
     private struct State {
@@ -54,6 +56,18 @@ public final class PathRacer: PacketPath {
         let sorted = candidates.sorted { $0.rank < $1.rank }
         state = Mutex(State(slots: sorted.enumerated().map { Slot(id: $0.offset, candidate: $0.element) }, nextId: sorted.count))
         (datagrams, continuation) = AsyncStream.makeStream(of: [UInt8].self, bufferingPolicy: .bufferingNewest(1024))
+    }
+
+    /// One line per path for the log when a connect fails: did it come up, where does it go, did anything come
+    /// back. "up, heard 0" means the packets went out and no answer arrived.
+    public var report: String {
+        state.withLock { s in
+            s.slots.map { slot in
+                let name = slot.path?.name ?? "rank \(slot.candidate.rank)"
+                let to = (slot.path as? UDPClient)?.remote.map { " → \($0)" } ?? ""
+                return "\(name)\(to): " + (slot.up ? "up, heard \(slot.heard)" : "not up (heard \(slot.heard))")
+            }.joined(separator: " · ")
+        }
     }
 
     /// The active path's name ("lan", "udp", "wss"), or nil while racing.
@@ -144,6 +158,7 @@ public final class PathRacer: PacketPath {
         state.withLock { s in
             guard let i = Self.index(id, in: s) else { return }
             s.slots[i].lastInbound = .now
+            s.slots[i].heard += 1
             if s.active.map({ i < $0 }) ?? true {
                 if s.active != nil { s.switches += 1 }
                 s.active = i

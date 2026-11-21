@@ -43,6 +43,13 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSLocalNetworkUsageDescription: Clamshell finds and connects to your Mac on the local network.
         NSBonjourServices: [_clamshell._udp]
+        # The TCP 443 path (WSS) talks TLS to the Mac's self-signed certificate: TLS there is camouflage, the
+        # Noise session inside authenticates the Mac (ADR-0003). ATS refuses that certificate even when the
+        # app accepts it, so the dynamic DNS services' names are exempt; nothing else is.
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            duckdns.org: {NSIncludesSubdomains: true, NSExceptionAllowsInsecureHTTPLoads: true}
+            dedyn.io: {NSIncludesSubdomains: true, NSExceptionAllowsInsecureHTTPLoads: true}
         NSCameraUsageDescription: To scan the pairing code your Mac shows, and for the optional latency test (the rear camera watches a flashing square on the Mac's screen). Nothing is recorded or sent.
         NSFaceIDUsageDescription: Clamshell asks for your fingerprint or face before it connects to your Mac.
         NSMicrophoneUsageDescription: Only when you turn on the microphone button while connected, the phone's microphone becomes the Mac's "Clamshell Microphone" input (end-to-end encrypted, never recorded on the phone).

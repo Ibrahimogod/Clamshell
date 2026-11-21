@@ -226,7 +226,11 @@ public final class WSSClient: NSObject, PacketPath, URLSessionWebSocketDelegate,
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
                            reason: Data?) { finish() }
 
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) { finish() }
+    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error, !lock.withLock({ closed }) { let e = error as NSError
+            print("# \(name) \(url.host ?? ""): \(e.localizedDescription) (\(e.code), stream \(e.userInfo["_kCFStreamErrorCodeKey"] ?? "-"), \((e.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain) \($0.code) \($0.userInfo["_kCFStreamErrorCodeKey"] ?? "")" } ?? ""))") }
+        finish()
+    }
 
     /// Any server certificate: the Noise handshake inside is what authenticates the Mac (ADR-0003).
     public func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,

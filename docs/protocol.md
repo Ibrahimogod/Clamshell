@@ -79,7 +79,7 @@ Input rules (ADR-0013):
 ## Protocol 1.3 (M3: pairing, internet paths, home endpoint)
 
 **Paths (ADR-0002).** The same outer packets travel over three paths: P1 LAN UDP (Bonjour), P2 home UDP
-(the router's forwarded port, default 51820) and P3 TLS + WebSocket on TCP 443, one binary WebSocket message
+(the router's forwarded port, default 443) and P3 TLS + WebSocket on TCP 443, one binary WebSocket message
 per packet. The outer TLS is camouflage only (ADR-0003): the phone accepts any certificate, and Noise inside
 authenticates the Mac. The phone starts the paths 150 ms apart and sends on all of them until one answers;
 the best-ranked path that answers is used. Every 2 s it copies one packet to better-ranked paths so a better

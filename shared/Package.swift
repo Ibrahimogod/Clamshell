@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "ClamshellKeychain", targets: ["ClamshellKeychain"]),
         .library(name: "ClamshellInput", targets: ["ClamshellInput"]),
         .library(name: "ClamshellFiles", targets: ["ClamshellFiles"]),
+        .library(name: "ClamshellHome", targets: ["ClamshellHome"]),
     ],
     targets: [
         // Versioned binary protocol: varints, TLVs, inner message header, message types (ADR-0011).
@@ -49,6 +50,9 @@ let package = Package(
         // Files of any size and whole folders (protocol 1.9): listing and hashing, the send queue, and the
         // resumable receiver that writes segments at their offsets and checks the hash before saving.
         .target(name: "ClamshellFiles", dependencies: ["ClamshellWire"]),
+        // The home address (ADR-0005): the router's UPnP service (public address and port forwards) and a
+        // DuckDNS (or deSEC) name pointed at that address.
+        .target(name: "ClamshellHome"),
 
         .testTarget(name: "ClamshellWireTests", dependencies: ["ClamshellWire"], resources: [.copy("Fixtures")]),
         .testTarget(name: "ClamshellSessionTests", dependencies: ["ClamshellSession", "ClamshellWire"], resources: [.copy("Vectors")]),
@@ -59,6 +63,7 @@ let package = Package(
         .testTarget(name: "ClamshellVideoTests", dependencies: ["ClamshellVideo", "ClamshellCodec"]),
         .testTarget(name: "ClamshellInputTests", dependencies: ["ClamshellInput", "ClamshellWire"]),
         .testTarget(name: "ClamshellFilesTests", dependencies: ["ClamshellFiles", "ClamshellWire"]),
+        .testTarget(name: "ClamshellHomeTests", dependencies: ["ClamshellHome"]),
         .testTarget(name: "ClamshellStreamTests", dependencies: ["ClamshellStream", "ClamshellVideo", "ClamshellWire", "ClamshellRateControl", "ClamshellSession"]),
     ]
 )

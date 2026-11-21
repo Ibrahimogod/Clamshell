@@ -215,7 +215,10 @@ Click the laptop symbol in the menu bar.
 | Quit Clamshell Host | |
 
 The menu also shows each connected phone, the path it's using ("· internet" away from home) and the public
-address phones use away from home.
+address phones use away from home. **Home address…** shows the address the router reports over UPnP and holds the DuckDNS name
+that keeps phones pointed at it ([SETUP §6](SETUP.md#6-away-from-home)); a notification says when it changed. Its
+**Port forwarding** switch lets the Mac open its two ports on the router over UPnP; an orange line in the menu
+means that didn't work.
 
 ## Privacy screen
 

@@ -336,13 +336,20 @@ public actor ClientSessionConnection {
     private let hello: Hello
     private var session: SecureSession?
     private var previous: SecureSession?
-    private var pending: ClientHandshake?
+    /// Handshakes sent and not answered yet, newest last. The connect loop sends a fresh one every 500 ms, and
+    /// on a slow path (mobile data, a router that just restarted) the Mac's answer to one comes back after the
+    /// next has gone out: an answer to any of them completes the handshake.
+    private var pending: [ClientHandshake] = []
+    static let maxPending = 16
     private var serverHello: Hello?
     private var waiters: [CheckedContinuation<Hello, Error>] = []
     private var rekeyStarted: ContinuousClock.Instant?
     public nonisolated let messages: AsyncStream<[InnerMessage]>
     private let continuation: AsyncStream<[InnerMessage]>.Continuation
     public private(set) var droppedPackets = 0
+    /// Handshake answers from the Mac that matched none of ours (a failed connect: answers did arrive).
+    public private(set) var unmatchedAnswers = 0
+    public private(set) var handshakesSent = 0
 
     public init(udp: any PacketPath, identity: StaticIdentity, server: PeerConfig, hello: Hello) {
         self.udp = udp
@@ -400,7 +407,9 @@ public actor ClientSessionConnection {
     private func sendInitiation() {
         do {
             let hs = try ClientHandshake(identity: identity, server: server, payload: [hello.message])
-            pending = hs
+            pending.append(hs)
+            handshakesSent += 1
+            if pending.count > Self.maxPending { pending.removeFirst(pending.count - Self.maxPending) }
             udp.send([hs.initiationPacket])
         } catch {
             failWaiters(ConnectError.rejected)
@@ -417,8 +426,13 @@ public actor ClientSessionConnection {
         guard let first = bytes.first else { return }
         switch OuterPacketType(rawValue: first) {
         case .handshakeResponse:
-            guard var hs = pending, let result = try? hs.complete(response: bytes, now: .now) else { droppedPackets += 1; return }
-            pending = nil
+            var completed: (session: SecureSession, messages: [InnerMessage])?
+            for i in pending.indices.reversed() {
+                var hs = pending[i]
+                if let r = try? hs.complete(response: bytes, now: .now) { completed = r; break }
+            }
+            guard let result = completed else { droppedPackets += 1; unmatchedAnswers += 1; return }
+            pending = []
             rekeyStarted = nil
             previous = session
             session = result.session

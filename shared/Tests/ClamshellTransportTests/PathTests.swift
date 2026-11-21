@@ -73,6 +73,18 @@ struct PathTests {
         return await inbox.first { $0.contains { (try? Pong($0))?.id == id } } != nil
     }
 
+    /// Mobile data after a router restart: the Mac's answer takes longer than the 500 ms between handshake
+    /// attempts. Before the fix every answer was for an attempt the phone had already replaced, and it never
+    /// connected.
+    @Test func handshakeOverASlowPath() async throws {
+        let r = try await rig()
+        let c = client(Slow(UDPClient(host: "127.0.0.1", port: r.udpPort, name: "udp"), delay: .milliseconds(1200)))
+        let hello = try await c.connect(timeout: .seconds(6))
+        #expect(hello == base.macHello)
+        #expect(await roundTrip(r, c, id: 7))
+        await c.close(); await r.server.stop(); r.wss.stop()
+    }
+
     @Test func wssAlone() async throws {
         let r = try await rig()
         let c = client(WSSClient(host: "127.0.0.1", port: r.wssPort))
@@ -241,4 +253,25 @@ final class Tee: PacketPath, @unchecked Sendable {
         (first ? a : b).send(packets)
     }
     func stop() { a.stop(); b.stop(); cont.finish() }
+}
+
+/// A path whose incoming packets arrive `delay` late (a long round trip).
+final class Slow: PacketPath, @unchecked Sendable {
+    let inner: any PacketPath
+    let delay: Duration
+    let datagrams: AsyncStream<[UInt8]>
+    private let cont: AsyncStream<[UInt8]>.Continuation
+    var name: String { inner.name }
+    init(_ inner: any PacketPath, delay: Duration) {
+        self.inner = inner
+        self.delay = delay
+        (datagrams, cont) = AsyncStream.makeStream(of: [UInt8].self)
+    }
+    func start() async throws {
+        try await inner.start()
+        let s = inner.datagrams, c = cont, d = delay
+        Task { for await p in s { Task { try? await Task.sleep(for: d); c.yield(p) } } }
+    }
+    func send(_ packets: [[UInt8]]) { inner.send(packets) }
+    func stop() { inner.stop(); cont.finish() }
 }

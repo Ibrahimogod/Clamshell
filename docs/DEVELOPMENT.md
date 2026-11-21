@@ -47,7 +47,7 @@ swift tools/scripts/make-icons.swift
 | Setting | Where | Effect |
 |---|---|---|
 | `bitrateMbps` | `defaults write <prefix>.host bitrateMbps -int 50` | LAN video bitrate (default 50; 25 drops frames on full-screen scroll) |
-| `udpPort` | `defaults write <prefix>.host udpPort -int 51820` | Fixed UDP port instead of a random one |
+| `udpPort` | `defaults write <prefix>.host udpPort -int 443` | Fixed UDP port instead of a random one (443 for away from home: mobile networks pass it) |
 | `tcpPort` | `defaults write <prefix>.host tcpPort -int 443` | Port of the TLS + WebSocket listener (0 isn't allowed; pause remote access instead) |
 | `publicHost` | pairing window field, or `defaults write <prefix>.host publicHost home.example.org` | Away-from-home address given to phones; overrides the router's answer |
 | `CLAMSHELL_TEST_PATTERN=1` | host environment | Synthetic frames (1 s scroll, 1 s still) instead of screen capture; no Screen Recording needed |
