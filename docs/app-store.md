@@ -2,6 +2,17 @@
 
 The phone app is meant to stay App Store eligible. Nothing here has been submitted yet.
 
+## What needs the paid membership
+
+The App Store, **TestFlight**, and the **EU alternative app marketplaces** all need a paid Apple Developer
+Program membership ($99 a year): App Store Connect, notarization for marketplaces, and the distribution
+certificates all come with it. So does Developer ID signing and notarization for the Mac host, which can't be
+on the Mac App Store anyway (it isn't sandboxed: screen capture, a virtual display and input injection).
+
+Until then the free routes are building from source (README › Quick start) and the prebuilt release files:
+an unsigned `.ipa` that AltStore or SideStore signs with the user's own Apple Account, and an ad-hoc-signed,
+un-notarized Mac zip ([SETUP › Install without building](SETUP.md#install-without-building)).
+
 ## Privacy manifest
 
 `ios-client/Resources/PrivacyInfo.xcprivacy` is bundled with the app:

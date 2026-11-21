@@ -32,7 +32,11 @@ cd mac-host && xcodebuild -project ClamshellHost.xcodeproj -scheme ClamshellHost
 open mac-host/build/dd/Build/Products/Debug/ClamshellHost.app
 ```
 
-**Releases.** `tools/scripts/release.sh` builds both apps in Release (see [SETUP.md §3](SETUP.md#3-build-and-install)).
+**Releases.** `tools/scripts/release.sh` builds both apps in Release (see [SETUP.md §3](SETUP.md#3-build-and-install)). The prebuilt
+downloads come from `tools/scripts/package.sh` (unsigned `.ipa`, ad-hoc-signed universal Mac zip, checksums;
+no Apple account needed), which `.github/workflows/release.yml` runs on GitHub's Xcode 27 runner when a `v*`
+tag is pushed. The tag must match `MARKETING_VERSION` (`v1.2.0` for 1.2.0), or the workflow stops before
+publishing. **Run workflow** without a tag only builds, and keeps the files on the run for 14 days.
 The version is `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in both `project.yml` files; keep them equal.
 The apps send it to each other in `Hello` (`AppVersion` in `ClamshellWire`).
 
