@@ -66,8 +66,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).client
-        MARKETING_VERSION: 1.2.0
-        CURRENT_PROJECT_VERSION: 8
+        MARKETING_VERSION: 1.3.0
+        CURRENT_PROJECT_VERSION: 9
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
@@ -91,8 +91,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CLAMSHELL_BUNDLE_PREFIX).client.widget
-        MARKETING_VERSION: 1.2.0
-        CURRENT_PROJECT_VERSION: 8
+        MARKETING_VERSION: 1.3.0
+        CURRENT_PROJECT_VERSION: 9
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "6.0"
